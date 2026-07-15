@@ -1,0 +1,19 @@
+# Java / Maven
+target/
+*.class
+*.jar
+*.log
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Node (agent-ui)
+node_modules/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
