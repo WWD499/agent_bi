@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.4.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.bi</groupId>
+    <artifactId>agent-bi-platform</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>agent-bi-platform</name>
+    <description>AI 智能 BI 数据分析平台 · Agent 化重构（Spring Boot 3 + Java 21 + Spring AI）</description>
+
+    <properties>
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- Sa-Token：groupId=cn.dev33，Spring Boot3 starter 最新 1.44.0 -->
+        <satoken.version>1.44.0</satoken.version>
+    </properties>
+
+    <dependencies>
+        <!-- Web / REST -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Bean Validation -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <!-- Actuator: /health /ready 探活 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- Sa-Token 最简鉴权（替代若依系统管理） -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-spring-boot3-starter</artifactId>
+            <version>${satoken.version}</version>
+        </dependency>
+        <!-- Redis：提供 RedisTemplate / RedisConnectionFactory 自动配置（从 spring.data.redis 读取） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- Sa-Token Redis DAO 集成：提供 SaTokenDaoForRedisTemplate（1.44.0 的 RedisTokenDao 继任类，
+             复用 Spring 的 RedisConnectionFactory / RedisTemplate 承载 Token 持久化）。
+             说明：1.44.0 已移除旧 artifact（sa-token-dao-redis / sa-token-redis 最高仅 1.40.0），
+             且 Redis DAO 类名由 RedisTokenDao 改为 SaTokenDaoForRedisTemplate，故此处用 sa-token-redis-template。 -->
+        <dependency>
+            <groupId>cn.dev33</groupId>
+            <artifactId>sa-token-redis-template</artifactId>
+            <version>${satoken.version}</version>
+        </dependency>
+
+        <!-- MyBatis（BI 业务层原样搬入，mapper 直连系统库） -->
+        <dependency>
+            <groupId>org.mybatis.spring.boot</groupId>
+            <artifactId>mybatis-spring-boot-starter</artifactId>
+            <version>3.0.3</version>
+        </dependency>
+        <!-- JDBC（系统库 DataSource + HikariCP，供动态数据源工厂复用） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <!-- MySQL 业务数据源驱动 -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- PostgreSQL 系统库驱动 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- commons-lang3（实体 toString 等工具） -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+        </dependency>
+        <!-- fastjson2：NL2SQL / RAG 组件 JSON 处理（QueryResultVo、ChartSelector、LlmService） -->
+        <dependency>
+            <groupId>com.alibaba.fastjson2</groupId>
+            <artifactId>fastjson2</artifactId>
+            <version>2.0.53</version>
+        </dependency>
+
+        <!--
+          Phase 2 Agent 层：手写 ReAct 工具调用循环，不引入 Spring AI。
+          理由：本机 m2 中 Spring AI 1.0.0 GA 构件的模块拆分异常
+          （ChatClient / ToolCallback / AssistantMessage 等核心类在拉取的 jar 中缺失），
+          属于 PLAN.md §7 已预警的「Spring AI 版本 API 变动」风险。
+          LlmService 已验证可稳定直连 OpenAI 兼容网关（deepseek-v3），
+          故 Agent 直接基于其 chatRaw（带 tools 参数）+ streamChat（SSE 流式）实现，
+          零新依赖、零网络风险，且对工具调用协议有完全掌控（面试更显功底）。
+        -->
+
+        <!-- 单元测试（Phase 1 收口：纯逻辑回归守卫） -->
+        <!-- 由 spring-boot-starter-parent 3.4.5 统一管理版本（junit 5.11 / mockito 5 / assertj / launcher）， -->
+        <!-- 保证 test 依赖版本一致；首次构建需联网拉取（仅一次）。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- 测试专用：内嵌 Redis 服务端（自带 redis 二进制，无需外部安装/联网下载），
+             用于在沙箱无外部 Redis 时自包含地验证 Phase 1 连通性与 Sa-Token Redis DAO。
+             仅 test 作用域，不进入业务运行期。 -->
+        <dependency>
+            <groupId>com.github.codemonstur</groupId>
+            <artifactId>embedded-redis</artifactId>
+            <version>1.4.3</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>agent-bi-platform</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
