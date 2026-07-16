@@ -5,11 +5,13 @@ import com.alibaba.fastjson2.JSONObject;
 import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.llm.PromptBuilder;
+import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
 import com.bi.agent.bi.service.sql.SqlValidator;
 import com.bi.agent.bi.util.BiDataSourceFactory;
 import com.bi.agent.bi.util.JdbcUrlBuilder;
 import com.bi.agent.bi.vo.DbTableVo;
+import com.bi.agent.bi.vo.DataProfile;
 import com.bi.agent.bi.vo.QueryResultVo;
 import com.bi.agent.common.BizException;
 import org.slf4j.Logger;
@@ -57,6 +59,9 @@ public class BiQueryService {
     @Autowired
     private BiDataSourceFactory dataSourceFactory;
 
+    @Autowired
+    private DataProbeService dataProbeService;
+
     /**
      * 自然语言查询完整流程
      *
@@ -79,9 +84,31 @@ public class BiQueryService {
         String allTableSchemas = getAllTableSchemas(datasource, availableTables);
         log.info("可用表名：{}", availableTables);
 
+        // 2.5 NL2SQL 生成前的数据探查前置（DataProfile）：把真实数据覆盖注入 Prompt，
+        // 根治「SQL 正确但 0 行」（如「上季度」被硬锁为 CURRENT_DATE 推算区间，与种子数据不重叠）。
+        // 候选业务表过滤：排除 bi_* 系统表（availableTables 已受 ≤20 约束）。
+        List<String> candidateTables = new ArrayList<>(availableTables);
+        candidateTables.removeIf(t -> t != null && t.toLowerCase().startsWith("bi_"));
+        Map<String, DataProfile> dataProfiles = Collections.emptyMap();
+        boolean probeSkipped = false;
+        try {
+            if (!candidateTables.isEmpty()) {
+                dataProfiles = dataProbeService.probe(datasource, candidateTables, datasource.getType());
+            }
+        } catch (Exception e) {
+            // 探查异常：降级走原无探查逻辑，绝不阻断主流程
+            log.warn("数据探查异常，降级走原无探查逻辑：{}", e.getMessage());
+        }
+        // 候选表非空但探查结果为空 -> 判定为降级跳过（仍走原静态模板软提示）
+        probeSkipped = !candidateTables.isEmpty() && (dataProfiles == null || dataProfiles.isEmpty());
+
+        // 选定主表画像（profile）注入 Prompt：
+        // 1) 入参指定 tableName -> 取该表；2) 否则优先含时间列的画像（相对时间映射最有价值）；3) 否则取第一张。
+        DataProfile mainProfile = selectPrimaryProfile(dataProfiles, tableName);
+
         // 3. 构建NL2SQL Prompt（注入RAG业务知识库上下文；Phase1 stub 返回空串）
         String ragContext = knowledgeService.buildRagContext(userQuery, datasourceId);
-        String prompt = promptBuilder.buildNl2SqlPrompt(userQuery, tableName, allTableSchemas, ragContext, datasource.getType());
+        String prompt = promptBuilder.buildNl2SqlPrompt(userQuery, tableName, allTableSchemas, ragContext, datasource.getType(), mainProfile);
 
         // 4. 调用LLM生成SQL
         String rawSql = llmService.chat(prompt, 0.1);
@@ -123,8 +150,43 @@ public class BiQueryService {
         result.setInterpretation(interpretation);
         result.setRowCount(rows.size());
 
-        log.info("自然语言查询完成：rowCount={}, chartType={}", rows.size(), chartType.getType());
+        // 回填数据探查结果（供前端/日志展示，并作为根治 0 行的证据链）
+        result.setProbeSkipped(probeSkipped);
+        result.setDataProfile(mainProfile);
+        result.setDataProfileSummary(mainProfile != null ? mainProfile.toSummary() : null);
+
+        log.info("自然语言查询完成：rowCount={}, chartType={}, probeSkipped={}", rows.size(), chartType.getType(), probeSkipped);
         return result;
+    }
+
+    /**
+     * 从探查结果 Map 中选取注入 Prompt 的主表画像（profile）。
+     *
+     * <p>选取优先级：
+     * <ol>
+     *   <li>入参 {@code tableName} 指定且命中 -> 直接取该表；</li>
+     *   <li>未指定时优先取含时间列的画像（相对时间「上季度」映射最有价值，直击根因）；</li>
+     *   <li>否则取 Map 中第一张表的画像。</li>
+     * </ol>
+     * 任何情况下探查结果为空则返回 {@code null}（PromptBuilder 退化为静态模板软提示）。
+     *
+     * @param profiles 表名 -> 探查结果（已成功探查的表）
+     * @param tableName 用户指定的目标表名（可为 null）
+     * @return 主表画像，或 null
+     */
+    private DataProfile selectPrimaryProfile(Map<String, DataProfile> profiles, String tableName) {
+        if (profiles == null || profiles.isEmpty()) {
+            return null;
+        }
+        if (tableName != null && !tableName.trim().isEmpty() && profiles.containsKey(tableName)) {
+            return profiles.get(tableName);
+        }
+        for (DataProfile p : profiles.values()) {
+            if (p.getTimeColumns() != null && !p.getTimeColumns().isEmpty()) {
+                return p;
+            }
+        }
+        return profiles.values().iterator().next();
     }
 
     /**
