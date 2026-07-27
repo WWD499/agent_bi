@@ -89,11 +89,23 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
         </dependency>
+        <!-- 邮件通知（预警邮件通道）：未配置 spring.mail.host 时 JavaMailSender 不创建，自动降级 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
         <!-- fastjson2：NL2SQL / RAG 组件 JSON 处理（QueryResultVo、ChartSelector、LlmService） -->
         <dependency>
             <groupId>com.alibaba.fastjson2</groupId>
             <artifactId>fastjson2</artifactId>
             <version>2.0.53</version>
+        </dependency>
+
+        <!-- Caffeine 3.1.8：真·多级缓存 L1 本地缓存（唯一新增运行期依赖，Java 21 兼容） -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <version>3.1.8</version>
         </dependency>
 
         <!--

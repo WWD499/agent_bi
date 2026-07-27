@@ -6,6 +6,14 @@ import com.bi.agent.bi.service.IBiKnowledgeService;
 import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.llm.PromptBuilder;
 import com.bi.agent.bi.service.probe.DataProbeService;
+import com.bi.agent.cache.CacheProperties;
+import com.bi.agent.cache.CacheStats;
+import com.bi.agent.cache.MultiLevelCache;
+import com.bi.agent.cache.RedisCacheSerializer;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Cache;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 import com.bi.agent.bi.service.sql.ChartSelector;
 import com.bi.agent.bi.service.sql.SqlValidator;
 import com.bi.agent.bi.util.BiDataSourceFactory;
@@ -13,12 +21,16 @@ import com.bi.agent.bi.vo.QueryResultVo;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
+import java.time.Duration;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -81,7 +93,7 @@ class Nl2sqlProbeTest {
         setField(svc, "datasourceService", dsSvc);
         setField(svc, "knowledgeService", ks);
         setField(svc, "dataSourceFactory", dsf);
-        setField(svc, "dataProbeService", new DataProbeService(dsf, validator));
+        setField(svc, "dataProbeService", new DataProbeService(dsf, validator, buildProbeCache()));
         return svc;
     }
 
@@ -89,6 +101,24 @@ class Nl2sqlProbeTest {
         Field f = target.getClass().getDeclaredField(name);
         f.setAccessible(true);
         f.set(target, value);
+    }
+
+    /**
+     * 构建一个以 mock StringRedisTemplate 为 L2 的探查缓存（L2 为内存桩，不连真实 Redis），
+     * 使 DataProbeService 在单测中可正常接入多级缓存。
+     */
+    private MultiLevelCache<String, com.bi.agent.bi.vo.DataProfile> buildProbeCache() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> ops = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(ops);
+        when(ops.get(anyString())).thenReturn(null);
+        // set(K,V,Duration) 在本版本为 void 方法，mock 默认即为 no-op，无需 stub 返回值
+        when(redis.keys(anyString())).thenReturn(Collections.emptySet());
+        when(redis.delete(anyString())).thenReturn(Boolean.TRUE);
+        Cache<Object, Object> caffeine = Caffeine.newBuilder()
+                .maximumSize(1000).expireAfterWrite(Duration.ofMinutes(30)).build();
+        return new MultiLevelCache<String, com.bi.agent.bi.vo.DataProfile>(new CacheProperties(), caffeine, redis,
+                new RedisCacheSerializer(), new CacheStats());
     }
 
     @Test

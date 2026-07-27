@@ -1,0 +1,66 @@
+%% 图① DataProbeService → MultiLevelCache → 探查结果（read-through）
+sequenceDiagram
+    autonumber
+    participant DP as DataProbeService
+    participant MLC as MultiLevelCache~String,DataProfile~
+    participant L1 as L1 Caffeine
+    participant L2 as L2 Redis
+    participant DB as 数据源(只读SELECT)
+
+    DP->>MLC: get(cacheKey, 10min, k -> probeSingleTable(...))
+    MLC->>L1: getIfPresent(cacheKey)
+    alt L1 命中
+        L1-->>MLC: DataProfile
+        MLC->>MLC: recordL1Hit()
+        MLC-->>DP: 返回缓存画像 (省去一次探查)
+    else L1 未命中
+        MLC->>L2: GET bi:cache:probe:sha256(cacheKey)
+        alt L2 命中
+            L2-->>MLC: JSON 字符串
+            MLC->>MLC: deserialize + recordL2Hit()
+            MLC->>L1: put(cacheKey, profile) 回填L1
+            MLC-->>DP: 返回画像
+        else L2 未命中
+            MLC->>MLC: recordMiss()
+            MLC->>DB: loader: probeSingleTable(conn, table)
+            DB-->>MLC: DataProfile (或单表降级)
+            MLC->>L1: put(cacheKey, profile)
+            MLC->>L2: SET bi:cache:probe:sha256(key) JSON EX 600
+            MLC-->>DP: 返回画像
+        end
+    end
+    Note over DP,DB: 整体异常仍返回部分/空 Map，探查不阻断查询(AC6)；<br/>进程重启/L2 持久化 → 缓存不丢(AC3)；多实例共享L2(AC4)
+
+%% 图② LlmService → MultiLevelCache → LLM 响应（read-through）
+sequenceDiagram
+    autonumber
+    participant LLM as LlmService
+    participant MLC as MultiLevelCache~String,String~
+    participant L1 as L1 Caffeine
+    participant L2 as L2 Redis
+    participant GW as AI 网关(chat/completions)
+
+    LLM->>LLM: cacheKey = sha(model+systemPrompt+userPrompt+toolsJson)  // 不区分用户
+    LLM->>MLC: get(cacheKey, 30min, k -> postForJson(gateway))
+    MLC->>L1: getIfPresent(cacheKey)
+    alt L1 命中
+        L1-->>MLC: 响应文本
+        MLC->>MLC: recordL1Hit()
+        MLC-->>LLM: 直接返回 (不再调网关, AC2)
+    else L1 未命中
+        MLC->>L2: GET bi:cache:llm:sha256(cacheKey)
+        alt L2 命中
+            L2-->>MLC: JSON 字符串
+            MLC->>MLC: deserialize + recordL2Hit()
+            MLC->>L1: put 回填
+            MLC-->>LLM: 返回响应
+        else L2 未命中
+            MLC->>MLC: recordMiss()
+            MLC->>GW: postForJson(/chat/completions)
+            GW-->>MLC: 响应文本 (401/403/429 等异常照常透传, AC3)
+            MLC->>L1: put(cacheKey, text)
+            MLC->>L2: SET bi:cache:llm:sha256(key) JSON EX 1800
+            MLC-->>LLM: 返回响应
+        end
+    end
+    Note over LLM: streamChat / chatRaw(含tool_calls) 默认不进缓存(见Q2);<br/>端到端行为与现状一致,仅多一次缓存填充(AC4)

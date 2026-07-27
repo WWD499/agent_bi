@@ -155,6 +155,23 @@ public class BiQueryService {
         result.setDataProfile(mainProfile);
         result.setDataProfileSummary(mainProfile != null ? mainProfile.toSummary() : null);
 
+        // 9.5 空结果自动诊断（治标）：0 行且主表已探查到时间维度时，
+        //     把真实时间范围作为补充提示附到结果，让 LLM 看到后自我纠正
+        //     （如「数据仅到 2025-Q4」），而非编造 2023/2022 等区间外的年份。
+        if (rows.isEmpty() && mainProfile != null
+                && mainProfile.getTimeColumns() != null && !mainProfile.getTimeColumns().isEmpty()) {
+            StringBuilder diag = new StringBuilder("【空结果诊断】查询返回 0 行。");
+            for (Map.Entry<String, DataProfile.TimeRange> e : mainProfile.getTimeColumns().entrySet()) {
+                DataProfile.TimeRange tr = e.getValue();
+                diag.append(" 表 ").append(mainProfile.getTableName())
+                        .append(" 真实数据覆盖：").append(tr.getMin()).append(" ~ ").append(tr.getMax())
+                        .append("（最新可用 ").append(tr.getLatestQuarter()).append("）。");
+            }
+            diag.append("请基于真实覆盖区间回答，不要编造查询区间之外的数据。");
+            result.setEmptyDiagnosis(diag.toString());
+            log.info("空结果自动诊断：{}", diag);
+        }
+
         log.info("自然语言查询完成：rowCount={}, chartType={}, probeSkipped={}", rows.size(), chartType.getType(), probeSkipped);
         return result;
     }

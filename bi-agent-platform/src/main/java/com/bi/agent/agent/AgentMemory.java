@@ -182,7 +182,16 @@ public class AgentMemory {
             List<Map<String, Object>> messages = get(userId, sid);
             List<ChatMessageVo> chatMessages = new ArrayList<>(messages.size());
             for (Map<String, Object> m : messages) {
-                chatMessages.add(new ChatMessageVo(asString(m.get("role")), asString(m.get("content"))));
+                ChatMessageVo cm = new ChatMessageVo(asString(m.get("role")), asString(m.get("content")));
+                // 回填图表（若有）：select_chart 的 ECharts option 随 assistant 消息一起落库，
+                // 使「切走再回来 / 刷新」从服务端历史恢复时图表仍在
+                Object charts = m.get("charts");
+                if (charts instanceof List) {
+                    @SuppressWarnings("unchecked")
+                    List<Object> c = (List<Object>) charts;
+                    cm.setCharts(c);
+                }
+                chatMessages.add(cm);
             }
             String title = "";
             String metaStr = (String) stringRedisTemplate.opsForHash().get(metaKey(userId), sid);

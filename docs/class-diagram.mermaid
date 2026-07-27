@@ -1,0 +1,63 @@
+classDiagram
+    class DataProfile {
+        +Long datasourceId
+        +String tableName
+        +long rowCount
+        +Map~String,TimeRange~ timeColumns
+        +Map~String,List~EnumValue~~ enumColumns
+        +boolean probed
+        +boolean probeSkipped
+        +String skipReason
+        +long costMillis
+        +String probedAt
+        +String toSummary() String
+    }
+    class TimeRange {
+        +String column
+        +String min
+        +String max
+        +String latestQuarter
+    }
+    class EnumValue {
+        +String value
+        +long count
+    }
+    class DataProbeService {
+        -BiDataSourceFactory dataSourceFactory
+        -SqlValidator sqlValidator
+        -Cache~String,DataProfile~ cache
+        +Map~String,DataProfile~ probe(BiDatasource ds, List~String~ tables, String dialect)
+        -DataProfile probeTable(Connection conn, String table, String dialect)
+        -boolean isEnumType(String typeName)
+        -String quoteIdent(String name, String dialect)
+    }
+    class BiQueryService {
+        +QueryResultVo naturalLanguageQuery(String, Long, String)
+    }
+    class PromptBuilder {
+        +String buildNl2SqlPrompt(String, String, String, String, DataProfile, String)
+        -void appendDialectRules(StringBuilder, String, DataProfile)
+        -void appendDataProfileSection(StringBuilder, Map~String,DataProfile~)
+    }
+    class QueryResultVo {
+        +boolean probeSkipped
+        +DataProfile dataProfile
+        +String dataProfileSummary
+    }
+    class SqlValidator {
+        +void validate(String sql, Set~String~ allowedTables)
+        +List~String~ extractTableNames(String sql)
+    }
+    class BiDataSourceFactory {
+        +HikariDataSource getDataSource(BiDatasource ds)
+    }
+
+    DataProfile "1" *-- "0..*" TimeRange : timeColumns
+    DataProfile "1" *-- "0..*" EnumValue : enumColumns
+    DataProbeService ..> BiDataSourceFactory : 复用同一连接池
+    DataProbeService ..> SqlValidator : 校验探查SQL(五层)
+    DataProbeService ..> DataProfile : 生成
+    BiQueryService ..> DataProbeService : 调用探查(插入点)
+    BiQueryService ..> PromptBuilder : 注入profile
+    BiQueryService ..> QueryResultVo : 填充probeSkipped/dataProfile
+    PromptBuilder ..> DataProfile : 读取真实覆盖区间

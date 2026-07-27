@@ -5,8 +5,11 @@ import com.bi.agent.bi.service.IBiAlertRuleService;
 import com.bi.agent.bi.service.IBiDatasourceService;
 import com.bi.agent.bi.service.IBiKnowledgeService;
 import com.bi.agent.bi.service.llm.LlmService;
+import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
+import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.vo.DbTableVo;
+import com.bi.agent.bi.vo.DataProfile;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -53,6 +56,8 @@ class BiAgentServiceTest {
     @Mock
     private ChartSelector chartSelector;
     @Mock
+    private DataProbeService dataProbeService;
+    @Mock
     private SseEmitter emitter;
 
     private BiAgentService service;
@@ -61,7 +66,7 @@ class BiAgentServiceTest {
     void setup() {
         Executor direct = Runnable::run; // 同步执行，便于测试断言
         service = new BiAgentService(llmService, memory, direct,
-                datasourceService, queryService, knowledgeService, alertRuleService, chartSelector);
+                datasourceService, queryService, knowledgeService, alertRuleService, chartSelector, dataProbeService);
         when(memory.get(anyString(), anyString())).thenReturn(List.of());
     }
 
@@ -95,7 +100,7 @@ class BiAgentServiceTest {
         when(datasourceService.listTables(1L)).thenReturn(List.of(t1, t2));
 
         // 同步执行（direct executor）
-        service.run("库里有哪些业务表？", "sess-1", "unit-test", emitter);
+        service.run("库里有哪些业务表？", "sess-1", "unit-test", null, emitter);
 
         // 1. 工具被真正调用
         verify(datasourceService).listTables(1L);
@@ -115,7 +120,7 @@ class BiAgentServiceTest {
                 + "}}]}";
         when(llmService.chatRaw(anyList(), anyString())).thenReturn(direct);
 
-        service.run("你是谁？", "sess-2", "unit-test", emitter);
+        service.run("你是谁？", "sess-2", "unit-test", null, emitter);
 
         verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
         verify(memory).add(eq("unit-test"), eq("sess-2"), any(), any());
@@ -142,10 +147,51 @@ class BiAgentServiceTest {
 
         when(datasourceService.listTables(1L)).thenReturn(List.of(new DbTableVo()));
 
-        service.run("复杂问题", "sess-3", "unit-test", emitter);
+        service.run("复杂问题", "sess-3", "unit-test", null, emitter);
 
         // 工具最多被调 8 次（步数上限），不会无限循环
         verify(datasourceService, org.mockito.Mockito.atMost(8)).listTables(1L);
+        verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
+    }
+
+    /**
+     * 【Bug A 回归】前端锁定数据源（datasourceId != null）时，必须触发真实数据探查
+     * （dataProbeService.probe）并把真实时间覆盖注入 system prompt，
+     * 否则模型会绕过 nl2sql 用系统日期推算"上季度"→ 编造 2023/2022 等区间外年份 → 0 行。
+     */
+    @Test
+    void whenDatasourceLocked_probesRealDataRange() throws java.io.IOException {
+        BiDatasource ds = org.mockito.Mockito.mock(BiDatasource.class);
+        org.mockito.Mockito.when(ds.getType()).thenReturn("postgresql");
+        org.mockito.Mockito.when(datasourceService.selectBiDatasourceById(10L)).thenReturn(ds);
+
+        DbTableVo t = new DbTableVo();
+        t.setTableName("fact_monthly_sales");
+        org.mockito.Mockito.when(datasourceService.listTables(10L)).thenReturn(List.of(t));
+
+        // 构造一张已探查到整型年月组合的画像（覆盖 2024-01~2025-12，最新季度 2025-Q4）
+        DataProfile profile = new DataProfile();
+        profile.setTableName("fact_monthly_sales");
+        profile.setRowCount(1200);
+        DataProfile.TimeRange tr = new DataProfile.TimeRange(
+                "year+month（整型年月组合）", "2024-01", "2025-12", "2025-Q4");
+        java.util.Map<String, DataProfile.TimeRange> tm = new java.util.LinkedHashMap<>();
+        tm.put("year+month", tr);
+        profile.setTimeColumns(tm);
+        org.mockito.Mockito.when(dataProbeService.probe(org.mockito.ArgumentMatchers.eq(ds), anyList(), org.mockito.ArgumentMatchers.eq("postgresql")))
+                .thenReturn(java.util.Map.of("fact_monthly_sales", profile));
+
+        String direct = "{"
+                + "\"choices\":[{\"message\":{"
+                + "\"role\":\"assistant\","
+                + "\"content\":\"各区域销售额趋势如下...\""
+                + "}}]}";
+        org.mockito.Mockito.when(llmService.chatRaw(anyList(), anyString())).thenReturn(direct);
+
+        service.run("上季度各区域销售额趋势", "sess-4", "unit-test", 10L, emitter);
+
+        // 关键断言：锁定数据源时确实调用了探查（根治编年份的根因修复已接线）
+        verify(dataProbeService).probe(org.mockito.ArgumentMatchers.eq(ds), anyList(), org.mockito.ArgumentMatchers.eq("postgresql"));
         verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
     }
 }

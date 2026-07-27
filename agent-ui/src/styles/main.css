@@ -1,0 +1,108 @@
+:root {
+  --bg: #f5f7fb;
+  --bg-grad-1: #eef2ff;
+  --bg-grad-2: #f5f7fb;
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-solid: #ffffff;
+  --border: rgba(15, 23, 42, 0.08);
+  --text: #1e293b;
+  --text-dim: #64748b;
+  --primary: #4f46e5;
+  --primary-soft: #eef2ff;
+  --accent: #0ea5e9;
+  --tool: #f59e0b;
+  --result: #10b981;
+  --reason: #8b5cf6;
+  --error: #ef4444;
+  --code-bg: #f1f5f9;
+  --shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme='dark'] {
+  --bg: #0b1020;
+  --bg-grad-1: #111936;
+  --bg-grad-2: #0b1020;
+  --panel: rgba(23, 31, 56, 0.66);
+  --panel-solid: #131a30;
+  --border: rgba(148, 163, 184, 0.16);
+  --text: #e2e8f0;
+  --text-dim: #94a3b8;
+  --primary: #818cf8;
+  --primary-soft: #1e2547;
+  --accent: #38bdf8;
+  --tool: #fbbf24;
+  --result: #34d399;
+  --reason: #a78bfa;
+  --error: #f87171;
+  --code-bg: #0f1629;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+  color: var(--text);
+  background: radial-gradient(1200px 600px at 80% -10%, var(--bg-grad-1), transparent),
+    var(--bg-grad-2);
+  transition: background 0.4s ease, color 0.4s ease;
+}
+
+.glass {
+  background: var(--panel);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.code-box {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  max-height: 240px;
+  overflow: auto;
+  color: var(--text);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.25s ease;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

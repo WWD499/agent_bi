@@ -4,8 +4,18 @@ import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.service.sql.SqlValidator;
 import com.bi.agent.bi.util.BiDataSourceFactory;
 import com.bi.agent.bi.vo.DataProfile;
+import com.bi.agent.cache.CacheProperties;
+import com.bi.agent.cache.CacheStats;
+import com.bi.agent.cache.MultiLevelCache;
+import com.bi.agent.cache.RedisCacheSerializer;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.Cache;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
+import java.time.Duration;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -13,6 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 数据探查服务单测（T6）：直连 agent_bi（dsId=10）真实业务库，
@@ -39,7 +53,7 @@ class DataProbeServiceTest {
 
     @Test
     void probe_factSalesOrder_returnsRealCoverage() {
-        DataProbeService probe = new DataProbeService(new BiDataSourceFactory(), new SqlValidator());
+        DataProbeService probe = new DataProbeService(new BiDataSourceFactory(), new SqlValidator(), buildProbeCache());
 
         Map<String, DataProfile> profiles = probe.probe(ds(), List.of("fact_sales_order"), "postgresql");
 
@@ -65,5 +79,23 @@ class DataProbeServiceTest {
                 "探查应识别枚举列 status");
         assertFalse(p.getEnumColumns().get("status").isEmpty(),
                 "status 应含实际取值（如 已完成）");
+    }
+
+    /**
+     * 构建一个以 mock StringRedisTemplate 为 L2 的探查缓存（L2 为内存桩，不连真实 Redis），
+     * 使 DataProbeService 在单测中可正常接入多级缓存。
+     */
+    private MultiLevelCache<String, DataProfile> buildProbeCache() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> ops = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(ops);
+        when(ops.get(anyString())).thenReturn(null);
+        // set(K,V,Duration) 在本版本为 void 方法，mock 默认即为 no-op，无需 stub 返回值
+        when(redis.keys(anyString())).thenReturn(Collections.emptySet());
+        when(redis.delete(anyString())).thenReturn(Boolean.TRUE);
+        Cache<Object, Object> caffeine = Caffeine.newBuilder()
+                .maximumSize(1000).expireAfterWrite(Duration.ofMinutes(30)).build();
+        return new MultiLevelCache<String, DataProfile>(new CacheProperties(), caffeine, redis,
+                new RedisCacheSerializer(), new CacheStats());
     }
 }

@@ -18,6 +18,7 @@
           <div v-for="(m, i) in historyList" :key="'h' + i" class="bubble" :class="m.role">
             <div class="bubble-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
             <div class="bubble-text">{{ m.content }}</div>
+            <ChartBlock v-for="(c, ci) in (m.charts || [])" :key="'c' + ci" :option="c" />
           </div>
           <div class="answer-text">
             <span v-if="answer">{{ answer }}</span>
@@ -30,6 +31,11 @@
       </section>
 
       <section class="input glass">
+        <div class="ds-row">
+          <el-select v-model="datasourceId" placeholder="选择数据源" filterable :disabled="running" style="width:240px">
+            <el-option v-for="ds in datasources" :key="ds.id" :label="`${ds.name}（${ds.type} / ${ds.databaseName}）`" :value="ds.id" />
+          </el-select>
+        </div>
         <el-input
           v-model="query"
           type="textarea"
@@ -55,8 +61,10 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { Promotion, VideoPause, Moon, Sunny } from '@element-plus/icons-vue'
 import { streamChat, getHistory } from '@/api/agent'
+import { listDatasources } from '@/api/datasource'
 import TracePanel from '@/components/TracePanel.vue'
 import HistoryDrawer from '@/components/HistoryDrawer.vue'
+import ChartBlock from '@/components/ChartBlock.vue'
 
 const query = ref('')
 const answer = ref('')
@@ -66,8 +74,13 @@ const sessionId = ref(genSid())
 const answerBox = ref(null)
 const historyList = ref([])
 const drawerVisible = ref(false)
+/** 数据源下拉（复用 QueryView 的数据源列表接口），跨会话保留 */
+const datasourceId = ref(null)
+const datasources = ref([])
 /** localStorage 中持久化的「最后活跃会话」key，刷新后恢复 */
 const LS_SID = 'bi_last_sid'
+/** localStorage 中持久化的「当前数据源」key，刷新后恢复 */
+const LS_DS = 'bi_ds_id'
 let controller = null
 
 const theme = ref(localStorage.getItem('bi_theme') || 'light')
@@ -117,7 +130,9 @@ function handleEvent(ev) {
     try {
       const r = JSON.parse(result)
       result = r
-      if (r && r.option) chartOption = r.option
+      // 后端 Agent 工具（select_chart）把 ECharts 配置放在 echartsOption 字段（与 QueryView 的 nl2sql 契约一致）
+      if (r && r.echartsOption) chartOption = r.echartsOption
+      else if (r && r.option) chartOption = r.option
       else if (r && (r.series || r.xAxis)) chartOption = r
     } catch {
       /* 保持原字符串 */
@@ -128,9 +143,13 @@ function handleEvent(ev) {
   } else if (event === 'error') {
     trace.value.push({ type: 'error', text: data })
   } else if (event === 'done') {
-    // 本轮结束：把流式最终答案固化成气泡，清空临时答题区，避免重复展示
-    if (answer.value) {
-      historyList.value.push({ role: 'assistant', content: answer.value })
+    // 本轮结束：把流式最终答案固化成气泡，并把本轮推理中 select_chart 生成的
+    // 图表一起带进最终汇总，避免「图在推理过程中渲染、汇总时却消失」
+    const charts = trace.value
+      .filter((t) => t.type === 'tool_result' && t.chartOption)
+      .map((t) => t.chartOption)
+    if (answer.value || charts.length) {
+      historyList.value.push({ role: 'assistant', content: answer.value || '', charts })
     }
     answer.value = ''
     trace.value = []
@@ -146,14 +165,19 @@ async function send() {
   answer.value = ''
   trace.value = []
   query.value = ''
-  // 持久化当前 sid，并把用户提问先渲染成气泡（后续可追溯、刷新不丢）
+  // 持久化当前 sid 与所选数据源，并把用户提问先渲染成气泡（后续可追溯、刷新不丢）
   localStorage.setItem(LS_SID, sessionId.value)
+  localStorage.setItem(LS_DS, datasourceId.value)
+  if (datasourceId.value == null || Number.isNaN(datasourceId.value)) {
+    console.warn('[BI] datasourceId 异常，当前值:', datasourceId.value, '将导致后端回退到默认数据源 1')
+  }
   historyList.value.push({ role: 'user', content: q })
   controller = new AbortController()
   try {
     await streamChat({
       query: q,
       sessionId: sessionId.value,
+      datasourceId: datasourceId.value,
       token: localStorage.getItem('bi_token') || '',
       signal: controller.signal,
       onEvent: handleEvent
@@ -182,16 +206,38 @@ function newSession() {
 }
 
 /** 从历史抽屉加载某会话：切换 sid + 渲染历史气泡，后续可继续对话 */
-function onOpenSession({ sessionId: sid, messages }) {
+function   onOpenSession({ sessionId: sid, messages }) {
   sessionId.value = sid
   localStorage.setItem(LS_SID, sid)
-  historyList.value = (messages || []).map((m) => ({ role: m.role, content: m.content }))
+  historyList.value = (messages || []).map((m) => ({ role: m.role, content: m.content, charts: m.charts || [] }))
   answer.value = ''
   trace.value = []
 }
 
 onMounted(async () => {
   document.documentElement.dataset.theme = theme.value
+  // 刷新后恢复上次选择的数据源（跨会话保留）
+  const dsStored = localStorage.getItem(LS_DS)
+  if (dsStored) {
+    const n = Number(dsStored)
+    if (Number.isInteger(n) && n > 0) {
+      datasourceId.value = n
+    } else {
+      // 脏值：清除并让后续自动选中逻辑接管
+      console.warn('[BI] localStorage bi_ds_id 有脏值:', dsStored, '已清除')
+      localStorage.removeItem(LS_DS)
+    }
+  }
+  // 拉取数据源列表（失败不阻塞页面）
+  try {
+    const list = await listDatasources()
+    datasources.value = Array.isArray(list) ? list : []
+    if (datasourceId.value == null && datasources.value.length > 0) {
+      datasourceId.value = datasources.value[0].id
+    }
+  } catch (e) {
+    // 拉取失败不影响对话功能
+  }
   // 刷新后恢复上次会话及其内容（sid 持久化保证）
   const stored = localStorage.getItem(LS_SID)
   if (stored) {
@@ -200,7 +246,8 @@ onMounted(async () => {
       const detail = await getHistory(stored)
       historyList.value = ((detail && detail.messages) || []).map((m) => ({
         role: m.role,
-        content: m.content
+        content: m.content,
+        charts: m.charts || []
       }))
     } catch (e) {
       // 未登录或网络异常：仅保留 sid，不渲染历史
@@ -289,6 +336,9 @@ onMounted(async () => {
   color: var(--text-dim);
   margin-bottom: 4px;
 }
+.bubble :deep(.chart-box) {
+  margin-top: 10px;
+}
 .caret {
   display: inline-block;
   animation: blink 1s steps(2) infinite;
@@ -319,5 +369,8 @@ onMounted(async () => {
 .hint {
   font-size: 12px;
   color: var(--text-dim);
+}
+.ds-row {
+  margin-bottom: 8px;
 }
 </style>

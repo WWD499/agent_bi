@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>agent_bi 系统架构图</title>
+<style>
+  body { margin: 0; padding: 20px; background: #ffffff; font-family: -apple-system, 'Microsoft YaHei', sans-serif; }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h1 { text-align: center; color: #1a1a2e; font-size: 22px; margin-bottom: 8px; }
+  .subtitle { text-align: center; color: #666; font-size: 13px; margin-bottom: 24px; }
+  .mermaid { display: flex; justify-content: center; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>agent_bi 智能体平台 — 系统架构图</h1>
+  <p class="subtitle">多步推理智能体 · 对话即分析 · 五层架构</p>
+  <div class="mermaid">
+graph TB
+    subgraph Frontend["🖥️ 前端展示层<br/><span style='font-size:11px;color:#888'>Vue3 + Element Plus + ECharts</span>"]
+        UI[ChatView 对话界面]
+        TP[TracePanel 推理轨迹面板]
+        CB[ChartBlock 图表渲染块]
+    end
+
+    subgraph Gateway["🔐 接入网关层<br/><span style='font-size:11px;color:#888'>Sa-Token 鉴权 + SSE 流式推送</span>"]
+        AUTH[Sa-Token 登录鉴权]
+        SSE[AgentChatController<br/>SSE 端点]
+    end
+
+    subgraph Agent["🧠 智能体编排层<br/><span style='font-size:11px;color:#888'>BiAgentService 手写 ReAct 循环</span>"]
+        REACT[BiAgentService<br/>ReAct 主循环]
+        MEM[AgentMemory<br/>多轮记忆 10轮窗口]
+        LLM[LlmService<br/>大模型调用网关]
+    end
+
+    subgraph Tools["🔧 业务工具集<br/><span style='font-size:11px,color:#888'>7 大标准化工具</span>"]
+        T1[list_tables 数据表探查]
+        T2[list_columns 字段探查]
+        T3[nl2sql 自然语言转SQL]
+        T4[run_sql 安全SQL执行<br/>五层防护]
+        T5[rag_search RAG知识检索]
+        T6[select_chart 智能图表选型]
+        T7[analyze_alert 预警分析]
+    end
+
+    subgraph Services["⚙️ 业务服务层"]
+        DS[数据源工厂 BiDataSourceFactory<br/>动态JDBC连接]
+        NLS[NL2SQL 引擎<br/>RAG增强]
+        RAG[RAG 向量检索引擎<br/>pgvector + bge-m3]
+        CS[ChartSelector<br/>图表选型器]
+        ALERT[预警规则引擎<br/>AlertRuleService]
+    end
+
+    subgraph Storage["💾 存储层"]
+        PG[(PostgreSQL ry<br/>系统库 + bi_* 元数据<br/>+ pgvector 向量)]
+        MYSQL[(MySQL 业务库<br/>动态接入)]
+        VEC[(pgvector 向量索引<br/>bi_knowledge.content_vector<br/>vector 1024维)]
+    end
+
+    %% 前端到网关
+    UI -->|HTTPS /api + SSE| SSE
+    TP <-->|SSE 事件流| SSE
+    CB <-->|ECharts option| SSE
+
+    %% 网关内部
+    SSE --> AUTH
+    AUTH -->|验证通过| REACT
+
+    %% 智能体核心
+    REACT --> MEM
+    REACT --> LLM
+    LLM -->|tools 函数调用| REACT
+
+    %% 工具调用
+    REACT --> T1 & T2 & T3 & T4 & T5 & T6 & T7
+
+    %% 工具到服务
+    T1 & T2 --> DS
+    T3 --> NLS
+    T4 --> DS
+    T5 --> RAG
+    T6 --> CS
+    T7 --> ALERT
+
+    %% 服务到存储
+    DS --> PG & MYSQL
+    NLS --> PG & MYSQL
+    RAG --> PG & VEC
+    CS -.->|返回option JSON| UI
+    ALERT --> PG & MYSQL
+
+    %% 样式
+    classDef frontend fill:#e8f4fd,stroke:#3498db,stroke-width:2px,color:#1a5276
+    classDef gateway fill:#fef9e7,stroke:#f39c12,stroke-width:2px,color:#7d6608
+    classDef agent fill:#eafaf1,stroke:#27ae60,stroke-width:2px,color:#196f3d
+    classDef tools fill:#f5eef8,stroke:#8e44ad,stroke-width:2px,color:#512e5f
+    classDef services fill:#fdedec,stroke:#e74c3c,stroke-width:2px,color:#922b21
+    classDef storage fill:#f4ecf7,stroke:#c0392b,stroke-width:2px,color:#641e16
+
+    class UI,TP,CB frontend
+    class AUTH,SSE gateway
+    class REACT,MEM,LLM agent
+    class T1,T2,T3,T4,T5,T6,T7 tools
+    class DS,NLS,RAG,CS,ALERT services
+    class PG,MYSQL,VEC storage
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'default',
+    themeVariables: {
+      primaryColor: '#eafaf1',
+      primaryBorderColor: '#27ae60',
+      primaryTextColor: '#196f3d',
+      lineColor: '#95a5a6',
+      secondaryColor: '#f8f9fa',
+      tertiaryColor: '#fdfefe'
+    },
+    flowchart: {
+      htmlLabels: true,
+      curve: 'basis',
+      nodeSpacing: 30,
+      rankSpacing: 50,
+      padding: 15
+    }
+  });
+</script>
+</body>
+</html>

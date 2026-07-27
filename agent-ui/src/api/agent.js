@@ -21,12 +21,13 @@ function parseSseBlock(block) {
  * @param {object} p
  * @param {string} p.query        用户问题
  * @param {string} p.sessionId    会话 ID（可选）
+ * @param {number|null} p.datasourceId 数据源 ID（可选，前端下拉选择）
  * @param {string} p.token        Sa-Token token（用于请求头）
  * @param {Function} p.onEvent    每收到一个 SSE 事件回调 ({event,data})
  * @param {AbortSignal} p.signal  用于中断
  * @returns {Promise<void>} 流结束 resolve；网络错误 reject
  */
-export async function streamChat({ query, sessionId, token, onEvent, signal }) {
+export async function streamChat({ query, sessionId, datasourceId, token, onEvent, signal }) {
   const resp = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: {
@@ -34,7 +35,7 @@ export async function streamChat({ query, sessionId, token, onEvent, signal }) {
       satoken: token || '',
       Authorization: 'Bearer ' + (token || '')
     },
-    body: JSON.stringify({ query, sessionId }),
+    body: JSON.stringify({ query, sessionId, datasourceId: datasourceId ?? null }),
     signal
   })
   if (!resp.ok) {

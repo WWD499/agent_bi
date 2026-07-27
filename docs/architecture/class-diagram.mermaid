@@ -1,0 +1,87 @@
+classDiagram
+    class MultiLevelCache~K,V~ {
+        -String namespace
+        -Class~V~ valueType
+        -Cache~K,V~ l1
+        -RedisTemplate~String,String~ l2
+        -RedisCacheSerializer serializer
+        -CacheStats stats
+        -Duration l2Ttl
+        -boolean l2Enabled
+        +V get(K key, Duration ttl, Function~K,V~ loader)
+        +Optional~V~ getIfPresent(K key)
+        +void clear(K key)
+        +void clearNamespace()
+        +CacheStats stats()
+        -String toL2Key(K key)
+        -V loadAndFill(K key, Duration ttl, Function~K,V~ loader)
+    }
+
+    class CacheProperties {
+        -boolean enabled = true
+        -boolean l2Enabled = true
+        -long defaultTtlMinutes = 10
+        -long l1MaximumSize = 2000
+        -long l1ExpireMinutes = 10
+        +getters / setters
+    }
+
+    class CacheStats {
+        -LongAdder l1Hits
+        -LongAdder l2Hits
+        -LongAdder misses
+        +recordL1Hit()
+        +recordL2Hit()
+        +recordMiss()
+        +long l1HitCount()
+        +long l2HitCount()
+        +long missCount()
+        +double hitRate()
+    }
+
+    class RedisCacheSerializer {
+        -String prefix = "bi:cache:"
+        +String serialize(V value)
+        +V deserialize(String json, Class~V~ type)
+        +String buildRedisKey(String namespace, String businessKey)
+    }
+
+    class CacheConfig {
+        +RedisTemplate~String,String~ cacheRedisTemplate(RedisConnectionFactory f)
+        +CacheProperties cacheProperties()
+        +MultiLevelCache~String,DataProfile~ probeCache(CacheProperties p, RedisTemplate~String,String~ rt, CacheStats s)
+        +MultiLevelCache~String,String~ llmCache(CacheProperties p, RedisTemplate~String,String~ rt, CacheStats s)
+        +CacheStats cacheStats()
+        +CacheMetrics cacheMetrics(MultiLevelCache~?,?~ ..., MeterRegistry reg)
+    }
+
+    class CacheMetrics {
+        -MeterRegistry registry
+        +bind(MultiLevelCache~?,?~ cache, String name)
+    }
+
+    class DataProbeService {
+        -MultiLevelCache~String,DataProfile~ probeCache
+        +Map~String,DataProfile~ probe(ds, tables, dialect)
+        -DataProfile probeSingleTable(...)
+        -// 移除: Map~String,CacheEntry~ cache
+        -// 移除: class CacheEntry
+    }
+
+    class LlmService {
+        -MultiLevelCache~String,String~ llmCache
+        +String chat(String prompt)
+        +String chatWithHistory(List~Map~ messages)
+        -String buildCacheKey(String model, String sys, String user, String toolsJson)
+        -// chatRaw / streamChat 不接入缓存
+    }
+
+    MultiLevelCache "1" *-- "1" CacheStats : records
+    MultiLevelCache "1" *-- "1" RedisCacheSerializer : uses
+    MultiLevelCache "1" o-- "1" Cache~K,V~ : l1(Caffeine)
+    CacheConfig ..> MultiLevelCache : @Bean creates
+    CacheConfig ..> CacheProperties : @ConfigurationProperties binds
+    CacheConfig ..> RedisCacheSerializer : instantiates
+    CacheMetrics ..> MultiLevelCache : observes
+    DataProbeService ..> MultiLevelCache : uses probeCache
+    LlmService ..> MultiLevelCache : uses llmCache

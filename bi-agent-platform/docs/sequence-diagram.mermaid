@@ -1,0 +1,57 @@
+%% 4.1 聊天持久化流程（①②③）
+sequenceDiagram
+    autonumber
+    participant FE as 前端 ChatView
+    participant C as AgentChatController
+    participant S as BiAgentService
+    participant M as AgentMemory
+    participant R as Redis
+
+    FE->>C: POST /api/agent/chat {query, sessionId}
+    Note over C: StpUtil.getLoginId() 取 userId
+    C->>S: run(userId, query, sessionId, emitter)
+    S->>M: get(userId, sessionId)
+    M->>R: LRANGE bi:agent:memory:{userId}:{sid} 0 -1
+    R-->>M: [msgJson...]
+    M-->>S: List~Map~ (JSON 解析)
+    Note over S: ② 记忆回填 + 本轮 user → runReactLoop → streamAnswer(SSE)
+    S-->>FE: SSE: token / tool_call / tool_result / reasoning
+    S->>M: add(userId, sessionId, userMsg, assistantMsg)
+    M->>R: RPUSH list [userJson, assistantJson]
+    M->>R: LTRIM list 保留末尾 20 条
+    M->>R: ZADD bi:agent:idx:{userId} now sid
+    M->>R: HSET bi:agent:meta:{userId} sid {title,preview,count,createTime,lastActiveTime}
+    S-->>FE: SSE: done
+
+%% 4.2 历史查看 / 回溯 / 清空（④⑤⑥）
+sequenceDiagram
+    autonumber
+    participant FE as 前端 ChatView / HistoryDrawer
+    participant HC as AgentHistoryController
+    participant M as AgentMemory
+    participant R as Redis
+
+    FE->>HC: GET /api/agent/history/list?page=1&size=20
+    HC->>M: listSessions(userId, page, size)
+    M->>R: ZCARD idx ; ZREVRANGE idx start stop
+    R-->>M: [sid...] 倒序
+    M->>R: HMGET meta [sid...]
+    R-->>M: [metaJson...]
+    M-->>HC: PageResult~SessionSummaryVo~
+    HC-->>FE: 列表(标题/预览/时间/条数)
+
+    FE->>HC: GET /api/agent/history/{sid}  (⑤ 点选回溯)
+    HC->>M: getSession(userId, sid)
+    M->>R: LRANGE memory:{userId}:{sid} 0 -1
+    R-->>M: [msgJson...]
+    M-->>HC: SessionDetailVo{messages}
+    HC-->>FE: 渲染历史 Q&A 气泡；sessionId = sid
+    Note over FE: 可在此基础上继续发问，新消息 append 到该 sid
+
+    FE->>HC: DELETE /api/agent/history/{sid}  (⑥ 单条删除)
+    HC->>M: clear(userId, sid)
+    M->>R: DEL list ; ZREM idx sid ; HDEL meta sid
+
+    FE->>HC: DELETE /api/agent/history/clear  (⑥ 清空全部)
+    HC->>M: clearAll(userId)
+    M->>R: 取全部 sid → DEL 各 list → DEL idx + meta

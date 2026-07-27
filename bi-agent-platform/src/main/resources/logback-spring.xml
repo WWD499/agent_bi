@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="60 seconds">
+
+    <!--
+      日志路径：默认 ./logs，可在 application.yml 用 app.log-path 覆盖（不要用 logging.file.path，
+      否则会与 Spring Boot 自带的 FILE appender 冲突导致重复落盘/启动报错）。
+      注意：本文件只使用 Logback 标准转换词（%d/%logger/%thread/%level/%msg/%highlight/%ex），
+      不依赖 Spring Boot 私有词（%clr/%wEx），避免某些环境下转换器未注册而启动崩溃。
+    -->
+    <springProperty name="LOG_PATH" source="app.log-path" defaultValue="./logs"/>
+    <springProperty name="APP_NAME" source="spring.application.name" defaultValue="agent-bi-platform"/>
+    <!--
+      控制台字符集：默认 UTF-8（现代终端/IDEA UTF-8 控制台）。
+      若你在中文 Windows 原生控制台（代码页 936 / GBK）看到乱码，
+      在 application.yml 把 app.console-charset 设成 GBK 即可，无需改本文件。
+      文件落盘始终用 UTF-8（见下方 FILE appender），方便编辑器/日志工具读取，二者编码可不同。
+    -->
+    <springProperty name="CONSOLE_CHARSET" source="app.console-charset" defaultValue="UTF-8"/>
+
+    <!-- 控制台：%highlight 为 Logback 内置转换器，按日志级别自动着色（无需 Spring 扩展） -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %highlight(%-5level) [%thread] %-40.40logger{39} : %msg%n%ex</pattern>
+            <charset>${CONSOLE_CHARSET}</charset>
+        </encoder>
+    </appender>
+
+    <!-- 文件：按天滚动 + 单文件上限 100MB + 保留 30 天 + 总容量 3GB 后删最旧 -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${APP_NAME}.log</file>
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%thread] %-40.40logger{39} : %msg%n%ex</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_PATH}/${APP_NAME}.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+            <maxFileSize>100MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>3GB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- 异步包装：队列 4096，满时阻塞保护日志不丢（neverBlock 默认 false） -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>4096</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="FILE"/>
+    </appender>
+
+    <!-- 业务包显式 DEBUG，确保探查/SQL/推理轨迹落盘（与 application.yml logging.level 一致，yml 运行时可覆盖） -->
+    <logger name="com.bi.agent" level="DEBUG"/>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="ASYNC_FILE"/>
+    </root>
+
+</configuration>

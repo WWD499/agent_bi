@@ -1,0 +1,63 @@
+classDiagram
+    class AgentMemory {
+        -MAX_TURNS: int = 10
+        -StringRedisTemplate redis
+        +get(userId: String, sid: String): List~Map~String,Object~~
+        +add(userId: String, sid: String, user: Map, assistant: Map): void
+        +clear(userId: String, sid: String): void
+        +clearAll(userId: String): void
+        +listSessions(userId: String, page: int, size: int): PageResult~SessionSummaryVo~
+        +getSession(userId: String, sid: String): SessionDetailVo
+    }
+    class AgentHistoryController {
+        -AgentMemory memory
+        -getUserId(): String
+        +listSessions(page: int, size: int): Result~PageResult~SessionSummaryVo~~
+        +getSession(sid: String): Result~SessionDetailVo~
+        +deleteSession(sid: String): Result~Void~
+        +clearAll(): Result~Void~
+    }
+    class AgentChatController {
+        -BiAgentService agentService
+        +chat(req: ChatReq): SseEmitter
+    }
+    class BiAgentService {
+        -AgentMemory memory
+        +run(userId: String, query: String, sid: String, emitter: SseEmitter): void
+        -doRun(userId: String, query: String, sid: String, emitter: SseEmitter): void
+    }
+    class ChatReq {
+        +query: String
+        +sessionId: String
+    }
+    class SessionSummaryVo {
+        +sessionId: String
+        +title: String
+        +preview: String
+        +createTime: Long
+        +lastActiveTime: Long
+        +messageCount: Integer
+    }
+    class SessionDetailVo {
+        +sessionId: String
+        +title: String
+        +messages: List~ChatMessageVo~
+    }
+    class ChatMessageVo {
+        +role: String
+        +content: String
+    }
+    class PageResult~T~ {
+        +list: List~T~
+        +total: Long
+        +page: int
+        +size: int
+    }
+    AgentChatController --> BiAgentService : run(userId,...)
+    BiAgentService --> AgentMemory : get/add
+    AgentHistoryController --> AgentMemory : list/get/clear/clearAll
+    AgentMemory ..> SessionSummaryVo : 构造
+    AgentMemory ..> SessionDetailVo : 构造
+    PageResult ~-- SessionSummaryVo : 泛型 T
+    SessionDetailVo *-- ChatMessageVo : messages
+    AgentChatController ..> ChatReq : 入参

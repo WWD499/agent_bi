@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>架构部署示意图</title>
+<style>body{margin:0;padding:20px;display:flex;justify-content:center;background:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+svg{max-width:100%;height:auto}</style>
+</head><body>
+<svg viewBox="0 0 680 620" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  </defs>
+  <text x="340" y="28" text-anchor="middle" font-size="15px" font-weight="500" fill="#2C2C2A">架构部署示意图</text>
+
+  <g>
+    <rect x="270" y="48" width="140" height="40" rx="8" fill="#E6F1FB" stroke="#378ADD" stroke-width="0.5"/>
+    <text x="340" y="72" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">用户浏览器</text>
+  </g>
+
+  <line x1="340" y1="88" x2="340" y2="118" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <g>
+    <rect x="240" y="122" width="200" height="56" rx="8" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/>
+    <text x="340" y="144" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">前端界面</text>
+    <text x="340" y="164" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">静态文件 / Node 开发服务器</text>
+  </g>
+  <text x="455" y="144" font-size="12px" fill="#444441">:5173(开发) / Nginx(生产)</text>
+
+  <line x1="340" y1="178" x2="340" y2="208" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="355" y="196" font-size="11px" fill="#888780">/api/*</text>
+
+  <g>
+    <rect x="255" y="212" width="170" height="50" rx="8" fill="#F1EFE8" stroke="#888780" stroke-width="0.5" stroke-dasharray="4 3"/>
+    <text x="340" y="234" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">Nginx（可选）</text>
+    <text x="340" y="252" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">反向代理层</text>
+  </g>
+
+  <line x1="340" y1="262" x2="340" y2="292" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <g>
+    <rect x="210" y="296" width="260" height="56" rx="8" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/>
+    <text x="340" y="318" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">后端服务（Spring Boot）</text>
+    <text x="340" y="338" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">智能体推理引擎 + 业务服务</text>
+  </g>
+  <text x="480" y="318" font-size="13px" font-weight="500" fill="#444441">:8080</text>
+
+  <line x1="270" y1="352" x2="270" y2="382" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="310" y1="352" x2="380" y2="382" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="370" y1="352" x2="490" y2="382" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+  <line x1="410" y1="352" x2="600" y2="382" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+
+  <g>
+    <rect x="190" y="386" width="160" height="52" rx="8" fill="#E6F1FB" stroke="#378ADD" stroke-width="0.5"/>
+    <text x="270" y="406" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">PostgreSQL</text>
+    <text x="270" y="424" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">系统库 + pgvector</text>
+  </g>
+
+  <g>
+    <rect x="300" y="386" width="160" height="52" rx="8" fill="#EAF3DE" stroke="#639922" stroke-width="0.5"/>
+    <text x="380" y="406" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">MySQL</text>
+    <text x="380" y="424" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">动态业务数据源</text>
+  </g>
+
+  <g>
+    <rect x="410" y="386" width="160" height="52" rx="8" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/>
+    <text x="490" y="406" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">Redis</text>
+    <text x="490" y="424" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">会话缓存（可选）</text>
+  </g>
+
+  <g>
+    <rect x="520" y="386" width="130" height="52" rx="8" fill="#FAECE7" stroke="#D85A30" stroke-width="0.5"/>
+    <text x="585" y="406" text-anchor="middle" font-size="14px" font-weight="500" fill="#2C2C2A" dominant-baseline="central">LLM 网关</text>
+    <text x="585" y="424" text-anchor="middle" font-size="12px" fill="#444441" dominant-baseline="central">外部服务</text>
+  </g>
+
+  <rect x="40" y="476" width="600" height="120" rx="12" fill="#F1EFE8" stroke="#B4B2A9" stroke-width="0.5"/>
+  <text x="55" y="498" font-size="12px" font-weight="500" fill="#444441">图例说明</text>
+  <rect x="55" y="512" width="16" height="16" rx="3" fill="#E6F1FB" stroke="#378ADD" stroke-width="0.5"/><text x="78" y="524" font-size="12px" dominant-baseline="central" fill="#444441">用户接入 / 系统存储</text>
+  <rect x="195" y="512" width="16" height="16" rx="3" fill="#E1F5EE" stroke="#1D9E75" stroke-width="0.5"/><text x="218" y="524" font-size="12px" dominant-baseline="central" fill="#444441">前端 / 业务数据源</text>
+  <rect x="350" y="512" width="16" height="16" rx="3" fill="#EEEDFE" stroke="#534AB7" stroke-width="0.5"/><text x="373" y="524" font-size="12px" dominant-baseline="central" fill="#444441">核心服务</text>
+  <rect x="470" y="512" width="16" height="16" rx="3" fill="#FAEEDA" stroke="#BA7517" stroke-width="0.5"/><text x="493" y="524" font-size="12px" dominant-baseline="central" fill="#444441">缓存</text>
+  <rect x="55" y="544" width="16" height="16" rx="3" fill="#FAECE7" stroke="#D85A30" stroke-width="0.5"/><text x="78" y="556" font-size="12px" dominant-baseline="central" fill="#444441">外部 AI 服务</text>
+  <rect x="195" y="544" width="16" height="16" rx="3" fill="#D3D1C7" stroke="#888780" stroke-width="0.5" stroke-dasharray="3 2"/><text x="218" y="556" font-size="12px" dominant-baseline="central" fill="#444441">可选组件</text>
+  <line x1="350" y1="552" x2="380" y2="552" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#a)"/>
+  <text x="390" y="556" font-size="12px" dominant-baseline="central" fill="#444441">数据流向</text>
+</svg>
+</body></html>

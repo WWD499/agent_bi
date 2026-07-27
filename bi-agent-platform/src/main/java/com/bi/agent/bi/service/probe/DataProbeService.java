@@ -5,6 +5,7 @@ import com.bi.agent.bi.util.BiDataSourceFactory;
 import com.bi.agent.bi.util.JdbcUrlBuilder;
 import com.bi.agent.bi.service.sql.SqlValidator;
 import com.bi.agent.bi.vo.DataProfile;
+import com.bi.agent.cache.MultiLevelCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,8 +14,8 @@ import org.springframework.stereotype.Service;
 
 import java.sql.*;
 import java.text.SimpleDateFormat;
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -45,17 +46,18 @@ public class DataProbeService {
     private int probeTimeoutSeconds = ProbeConstants.PROBE_TIMEOUT_SECONDS;
 
     /**
-     * T8 探查结果缓存（轻量进程内 TTL 缓存，零外部依赖，离线可构建）。
-     * key = 数据源ID:表名；value 带过期时间。语义与 Caffeine 版完全一致，
-     * 若后续引入 Caffeine，只需替换本 Map 为
-     * {@code Caffeine.newBuilder().expireAfterWrite(CACHE_TTL_MINUTES, TimeUnit.MINUTES).build()} 即可。
+     * 真·多级缓存（L1 Caffeine + L2 Redis 复用）的探查命名空间实例。
+     * key = 数据源ID:表名；TTL 10 分钟（ProbeConstants.CACHE_TTL_MINUTES）。
+     * 取代原进程内 ConcurrentHashMap，重启不丢、多实例共享 L2。
      */
-    private final Map<String, CacheEntry> cache = new ConcurrentHashMap<>();
+    private final MultiLevelCache<String, DataProfile> probeCache;
 
     @Autowired
-    public DataProbeService(BiDataSourceFactory dataSourceFactory, SqlValidator sqlValidator) {
+    public DataProbeService(BiDataSourceFactory dataSourceFactory, SqlValidator sqlValidator,
+                            MultiLevelCache<String, DataProfile> probeCache) {
         this.dataSourceFactory = dataSourceFactory;
         this.sqlValidator = sqlValidator;
+        this.probeCache = probeCache;
     }
 
     /**
@@ -77,7 +79,6 @@ public class DataProbeService {
 
         long start = System.currentTimeMillis();
         String d = (dialect == null) ? "postgresql" : dialect.trim().toLowerCase();
-        long ttlMillis = (long) ProbeConstants.CACHE_TTL_MINUTES * 60_000L;
         try (Connection conn = dataSourceFactory.getDataSource(ds).getConnection()) {
             DatabaseMetaData meta = conn.getMetaData();
             String catalog = JdbcUrlBuilder.catalog(ds);
@@ -87,16 +88,13 @@ public class DataProbeService {
                 if (t == null || t.trim().isEmpty()) {
                     continue;
                 }
-                // T8：缓存命中且未过期 -> 直接复用，省去一次只读探查
+                // 真·多级缓存：先查 L1/L2，未命中回源探查并回填两级（TTL = ProbeConstants.CACHE_TTL_MINUTES）。
+                // cacheKey 保持原 数据源ID:表名，命中行为与原 ConcurrentHashMap 一致，不破坏既有调用方。
                 String cacheKey = ds.getId() + ":" + t;
-                CacheEntry hit = cache.get(cacheKey);
-                if (hit != null && hit.isAlive()) {
-                    result.put(t, hit.profile);
-                    continue;
-                }
-                DataProfile profile = probeSingleTable(conn, meta, catalog, schemaPattern, ds, t, d);
+                DataProfile profile = probeCache.get("probe", cacheKey,
+                        Duration.ofMinutes(ProbeConstants.CACHE_TTL_MINUTES), DataProfile.class,
+                        k -> probeSingleTable(conn, meta, catalog, schemaPattern, ds, t, d));
                 result.put(t, profile);
-                cache.put(cacheKey, new CacheEntry(profile, ttlMillis));
             }
         } catch (Exception e) {
             // 整体异常：仅告警，返回已探查的部分结果（或空 Map），不抛
@@ -146,6 +144,11 @@ public class DataProbeService {
                     }
                 }
             }
+            // 2.5 整型 year+month 组合（企业事实表最常见时序建模）：
+            //     fact_monthly_sales(year int, month int) 非 DATE 类型，isTimeType 漏判；
+            //     需单独探查 MIN(year*100+month)/MAX(...) 换算 YYYY-MM 注入 Prompt。
+            detectYearMonthCombo(conn, dialect, tableName, columns, timeRanges);
+
             profile.setTimeColumns(timeRanges);
 
             // 3. 枚举列：先 COUNT(DISTINCT)，低基数再 GROUP BY 取 TOP N
@@ -212,6 +215,63 @@ public class DataProbeService {
             }
         }
         return null;
+    }
+
+    /** 整型类型判定（INTEGER / INT / BIGINT / NUMBER / SMALLINT / DECIMAL 系列） */
+    private boolean isIntegerType(String typeName) {
+        if (typeName == null) return false;
+        String t = typeName.toUpperCase();
+        return t.contains("INT") || t.contains("DECIMAL") || t.contains("NUMBER") || t.contains("NUMERIC");
+    }
+
+    /**
+     * 检测 year(int) + month(int) 整型组合作为时间维度，探查真实覆盖区间。
+     *
+     * <p>企业事实表（如 fact_monthly_sales）常以「年整型列 + 月整型列」建模时序，
+     * 而非 DATE/TIMESTAMP 类型；{@link #isTimeType} 仅认日期类型会漏判，
+     * 导致该表时间范围未被探查、未注入 Prompt，LLM 用 CURRENT_DATE 推算窗口与真实数据不重叠 → 0 行。
+     *
+     * <p>本方法将组合探明的 MIN/MAX 换算为 YYYY-MM 格式写入 {@link DataProfile.TimeRange}
+     * （column 标为 "year+month（整型年月组合）"），复用既有的 Prompt 注入与 latestQuarter 推算逻辑。
+     */
+    private void detectYearMonthCombo(Connection conn, String dialect, String tableName,
+                                        List<ColumnMeta> columns, Map<String, DataProfile.TimeRange> timeRanges) {
+        ColumnMeta yearCol = null, monthCol = null;
+        for (ColumnMeta c : columns) {
+            if (!isIntegerType(c.typeName)) continue;
+            String cn = c.colName == null ? "" : c.colName.toLowerCase();
+            if ("year".equals(cn)) yearCol = c;
+            else if ("month".equals(cn)) monthCol = c;
+        }
+        if (yearCol == null || monthCol == null) return;
+
+        String sql = "SELECT MIN(" + escapeId(yearCol.colName, dialect) + "*100 + "
+                + escapeId(monthCol.colName, dialect) + "), MAX("
+                + escapeId(yearCol.colName, dialect) + "*100 + "
+                + escapeId(monthCol.colName, dialect) + ") FROM " + escapeId(tableName, dialect);
+        sqlValidator.validate(sql, Collections.singleton(tableName));
+        try (Statement stmt = conn.createStatement()) {
+            stmt.setQueryTimeout(probeTimeoutSeconds);
+            try (ResultSet rs = stmt.executeQuery(sql)) {
+                if (rs.next()) {
+                    int minYm = rs.getInt(1);
+                    int maxYm = rs.getInt(2);
+                    if (rs.wasNull()) return;
+                    int minYear = minYm / 100, minMonth = minYm % 100;
+                    int maxYear = maxYm / 100, maxMonth = maxYm % 100;
+                    String min = String.format("%04d-%02d", minYear, minMonth);
+                    String max = String.format("%04d-%02d", maxYear, maxMonth);
+                    String latestQuarter = latestQuarterOf(max);
+                    DataProfile.TimeRange tr = new DataProfile.TimeRange(
+                            "year+month（整型年月组合）", min, max, latestQuarter);
+                    timeRanges.put("year+month", tr);
+                    log.info("探查到整型年月组合：table={}, 覆盖 {}~{}（最新季度 {}）",
+                            tableName, min, max, latestQuarter);
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("整型年月组合探查失败，跳过：table={}", tableName, e);
+        }
     }
 
     private long countDistinct(Connection conn, String dialect, String table, String column) throws SQLException {
@@ -327,18 +387,5 @@ public class DataProbeService {
         }
     }
 
-    /** T8 缓存条目：携带过期时间戳，判断是否仍有效 */
-    private static class CacheEntry {
-        final DataProfile profile;
-        final long expireAt;
-
-        CacheEntry(DataProfile profile, long ttlMillis) {
-            this.profile = profile;
-            this.expireAt = System.currentTimeMillis() + ttlMillis;
-        }
-
-        boolean isAlive() {
-            return System.currentTimeMillis() < expireAt;
-        }
-    }
+    /** T8 探查结果缓存条目已移除：原进程内 ConcurrentHashMap + CacheEntry 由 MultiLevelCache 取代（见类头注释与 probe()）。 */
 }

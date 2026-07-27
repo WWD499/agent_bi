@@ -1,0 +1,54 @@
+sequenceDiagram
+    autonumber
+    actor U as 用户
+    participant FE as QueryView.vue
+    participant BQ as BiQueryService
+    participant DS as BiDataSourceFactory
+    participant DP as DataProbeService
+    participant SV as SqlValidator
+    participant PB as PromptBuilder
+    participant LLM as LlmService
+    participant CS as ChartSelector
+    participant DB as 业务库(agent_bi)
+
+    U->>FE: 输入"分析上季度各区域销售额趋势"
+    FE->>BQ: naturalLanguageQuery(query, dsId, tableName?)
+    BQ->>BQ: 步骤1 获取 datasource
+    BQ->>DS: getDataSource(datasource).getConnection()
+    BQ->>DB: 步骤2 DatabaseMetaData 取表结构 + availableTables
+    DB-->>BQ: allTableSchemas, availableTables
+    Note over BQ,DP: 插入点（步骤2后 / 步骤3前）
+    BQ->>DP: probe(datasource, 业务表候选, dialect)
+    alt 探查成功（≤3s 且无异常）
+        DP->>DS: getDataSource(datasource).getConnection() 复用同一池
+        loop 每张候选表
+            DP->>DB: COUNT(*)、MIN/MAX(时间列)、COUNT(DISTINCT) 探基数→DISTINCT(枚举列 Top20)
+            DB-->>DP: rowCount、时间min/max、enum值+计数
+        end
+        DP->>SV: validate(探查SQL, allowedTables) 五层兜底
+        DP-->>BQ: Map<table,DataProfile>（probeSkipped=false）
+    else 探查失败/超时（>3s 或异常）
+        DP-->>BQ: probeSkipped=true, skipReason（降级，不阻断）
+        Note right of DP: log.warn 降级事件
+    end
+    BQ->>PB: buildNl2SqlPrompt(..., profile, dialect)
+    alt profile != null（已探查）
+        PB->>PB: appendDataProfileSection 注入"真实数据覆盖"提示
+        PB->>PB: appendDialectRules 仅作软兜底（不再硬锁 CURRENT_DATE）
+    else profile == null（降级）
+        PB->>PB: appendDialectRules 原静态模板(软提示)
+    end
+    PB-->>BQ: prompt
+    BQ->>LLM: chat(prompt, 0.1)
+    LLM-->>BQ: rawSql
+    BQ->>BQ: extractSql(rawSql)
+    BQ->>SV: validate(sql, availableTables)
+    SV-->>BQ: 通过
+    BQ->>DS: getDataSource(datasource).getConnection()
+    BQ->>DB: 执行 SQL
+    DB-->>BQ: columns, rows（rowCount>0，区间落在真实覆盖内）
+    BQ->>CS: selectChart(columns, rows, query)
+    CS-->>BQ: chartType=line（非 table）
+    BQ->>BQ: 组装 QueryResultVo（probeSkipped, dataProfile, dataProfileSummary）
+    BQ-->>FE: QueryResultVo
+    FE->>FE: 渲染图表 + dataProfileSummary；rowCount=0 时按 probeSkipped 展示说明

@@ -28,6 +28,9 @@ public class QueryResultVo {
     /** 探查结果友好摘要（由 DataProfile.toSummary() 生成，前端直接展示；降级时为 null） */
     private String dataProfileSummary;
 
+    /** 空结果自动诊断提示：0 行时附上主表真实时间范围，引导 LLM 自我纠正（不编造年份） */
+    private String emptyDiagnosis;
+
     public String getSql() { return sql; }
     public void setSql(String sql) { this.sql = sql; }
 
@@ -60,4 +63,7 @@ public class QueryResultVo {
 
     public String getDataProfileSummary() { return dataProfileSummary; }
     public void setDataProfileSummary(String dataProfileSummary) { this.dataProfileSummary = dataProfileSummary; }
+
+    public String getEmptyDiagnosis() { return emptyDiagnosis; }
+    public void setEmptyDiagnosis(String emptyDiagnosis) { this.emptyDiagnosis = emptyDiagnosis; }
 }

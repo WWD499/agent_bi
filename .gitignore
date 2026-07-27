@@ -17,3 +17,18 @@ build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Python (ocr-service)
+venv/
+__pycache__/
+*.pyc
+ocr-service/venv/
+ocr-service/__pycache__/
+
+# 沙箱 / Maven 调试遗留（非源码，禁止入库）
+bi-agent-platform/_jerr.txt
+bi-agent-platform/_jopts.txt
+bi-agent-platform/_srcs.txt
+bi-agent-platform/mvn
+bi-agent-platform/_seed_ds.sql
+bi-agent-platform/target/

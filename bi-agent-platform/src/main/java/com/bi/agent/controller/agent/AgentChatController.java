@@ -3,6 +3,8 @@ package com.bi.agent.controller.agent;
 import com.bi.agent.agent.BiAgentService;
 import com.bi.agent.common.Result;
 import cn.dev33.satoken.stp.StpUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import jakarta.validation.Valid;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,6 +24,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 @RequestMapping("/api/agent")
 public class AgentChatController {
 
+    private static final Logger log = LoggerFactory.getLogger(AgentChatController.class);
+
     private final BiAgentService agentService;
 
     public AgentChatController(BiAgentService agentService) {
@@ -37,7 +41,9 @@ public class AgentChatController {
         // 0 表示不设超时，Agent 多步推理可能耗时 10~30s
         SseEmitter emitter = new SseEmitter(0L);
         String userId = String.valueOf(StpUtil.getLoginId());
-        agentService.run(req.query(), req.sessionId(), userId, emitter);
+        log.info("收到 Agent 对话请求：query={}, sessionId={}, datasourceId={}",
+            req.query(), req.sessionId(), req.datasourceId());
+        agentService.run(req.query(), req.sessionId(), userId, req.datasourceId(), emitter);
         return emitter;
     }
 

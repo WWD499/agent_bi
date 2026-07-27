@@ -69,6 +69,8 @@ public class SaTokenConfig implements WebMvcConfigurer {
                 SaRouter.match("/api/**")
                         .notMatch("/api/auth/login")
                         .notMatch("/api/auth/logout")
+                        .notMatch("/api/bi/dashboard/share")
+                        .notMatch("/api/bi/dashboard/share-query")
                         .notMatchMethod("OPTIONS")
                         .notMatch("/error")
                         .check(StpUtil::checkLogin);
