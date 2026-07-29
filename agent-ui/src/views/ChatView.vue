@@ -62,6 +62,7 @@ import { ref, onMounted, nextTick } from 'vue'
 import { Promotion, VideoPause, Moon, Sunny } from '@element-plus/icons-vue'
 import { streamChat, getHistory } from '@/api/agent'
 import { listDatasources } from '@/api/datasource'
+import { listSandboxDbs } from '@/api/sandbox'
 import TracePanel from '@/components/TracePanel.vue'
 import HistoryDrawer from '@/components/HistoryDrawer.vue'
 import ChartBlock from '@/components/ChartBlock.vue'
@@ -216,11 +217,11 @@ function   onOpenSession({ sessionId: sid, messages }) {
 
 onMounted(async () => {
   document.documentElement.dataset.theme = theme.value
-  // 刷新后恢复上次选择的数据源（跨会话保留）
+  // 刷新后恢复上次选择的数据源（跨会话保留，允许负值：负 id 表示具体沙箱库）
   const dsStored = localStorage.getItem(LS_DS)
   if (dsStored) {
     const n = Number(dsStored)
-    if (Number.isInteger(n) && n > 0) {
+    if (Number.isInteger(n)) {
       datasourceId.value = n
     } else {
       // 脏值：清除并让后续自动选中逻辑接管
@@ -232,6 +233,28 @@ onMounted(async () => {
   try {
     const list = await listDatasources()
     datasources.value = Array.isArray(list) ? list : []
+    // 追加沙箱虚拟数据源：
+    //  - id=0 表示「全部沙箱」（后端 BiAgentService 识别为 sandbox 模式，作用域为整个 sandbox schema）
+    //  - id=-dbId 表示锁定某个具体沙箱库（作用域收敛到该库，便于「按库分析」）
+    const sandboxOptions = [
+      { id: 0, name: '数据沙箱（全部）', type: 'sandbox', databaseName: 'sandbox' }
+    ]
+    try {
+      const dbs = await listSandboxDbs()
+      if (Array.isArray(dbs)) {
+        for (const db of dbs) {
+          sandboxOptions.push({
+            id: -db.id,
+            name: '沙箱·' + db.name,
+            type: 'sandbox',
+            databaseName: db.dbKey
+          })
+        }
+      }
+    } catch (e) {
+      // 沙箱库列表拉取失败不影响其余功能
+    }
+    datasources.value = datasources.value.concat(sandboxOptions)
     if (datasourceId.value == null && datasources.value.length > 0) {
       datasourceId.value = datasources.value[0].id
     }

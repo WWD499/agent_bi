@@ -16,6 +16,7 @@ agent_bi 以**单 Agent 推理引擎**为核心：用户用自然语言提问，
 | **BI 数据大屏** | 基于 grid-layout-plus 的拖拽式大屏编排，支持图表 / 指标卡 / 图片三类组件；大屏可生成 `access_token` 对外**只读分享**。支持导出图片 / PDF。 |
 | **数据异常预警** | 规则引擎 + AI 双引擎分析，定时扫描关键指标；触发后可通过邮件（SMTP）等通道通知，并沉淀预警记录。 |
 | **OCR 文档识别** | 集成 PaddleOCR 本地服务，识别图片 / 文档中的文字，识别结果可一键沉淀为知识库条目。 |
+| **数据沙箱** | 用户在隔离的 `sandbox` schema 中自由分析、源业务数据零污染。导入两种方式：① **从数据源勾选克隆**——在「数据沙箱」页选已配置数据源、勾选表后一键克隆进沙箱（每表最多 1 万行）；② **粘贴导入**——直接粘贴 CSV/TSV。导入后支持表预览、NL2SQL、拖 SQL、选图、解读，并可一键切到「智能对话」让 Agent 基于沙箱分析。 |
 
 ---
 
@@ -32,7 +33,7 @@ agent_bi 以**单 Agent 推理引擎**为核心：用户用自然语言提问，
 | OCR 服务 | **PaddleOCR**（Python FastAPI，`ocr-service/`）|
 | Agent 实现 | **手写 ReAct 工具调用循环**（未引入 Spring AI，规避其 1.0 GA 构件风险，零新增依赖）|
 
-**Agent 工具集（7 个）**：`Nl2SqlTool` / `RunSqlTool` / `RagSearchTool` / `ListTablesTool` / `ListColumnsTool` / `SelectChartTool` / `AnalyzeAlertTool`。
+**Agent 工具集（7 业务 + 4 沙箱只读）**：业务库 `Nl2SqlTool` / `RunSqlTool` / `RagSearchTool` / `ListTablesTool` / `ListColumnsTool` / `SelectChartTool` / `AnalyzeAlertTool`；锁定「数据沙箱」时自动切换为 4 个沙箱专用只读工具（`SandboxListTablesTool` / `SandboxListColumnsTool` / `SandboxNl2SqlTool` / `SandboxRunSqlTool`，名称与业务版一致但指向 `sandbox` schema）。
 
 ---
 
@@ -43,6 +44,7 @@ agent_bi/
 ├── bi-agent-platform/        # 后端（Spring Boot 3.4.5 / Java 21）
 │   ├── sql/
 │   │   ├── agent_bi_init.sql     # 核心业务表初始化（预警 / 知识库 / 数据源等）
+│   │   ├── sandbox_init.sql      # 数据沙箱：sandbox schema + 元数据表 bi_sandbox_table
 │   │   └── verify.sql           # 初始化后自检
 │   ├── src/main/resources/
 │   │   ├── application.yml       # 主配置（已被 .gitignore 忽略，密钥不入库）
@@ -90,6 +92,7 @@ CREATE DATABASE agent_bi;
 \i bi-agent-platform/sql/agent_bi_init.sql      -- 核心业务表
 \i bi-agent-platform/src/main/resources/sql/bi_dashboard.sql  -- BI 大屏表
 \i sql/bi_ocr_record.sql                        -- OCR 记录表
+\i bi-agent-platform/sql/sandbox_init.sql        -- 数据沙箱（sandbox schema + 元数据表）
 -- 可选：演示数据源种子
 \i bi-agent-platform/_seed_ds.sql
 ```
@@ -145,7 +148,8 @@ python ocr_server.py                # 监听 http://localhost:8866
 ## 六、配置说明（安全边界）
 
 - **SQL 只读校验**：Agent 执行的 SQL 经只读校验，拦截 `INSERT/UPDATE/DELETE/DDL`，仅允许 `SELECT`。
-- **工具白名单**：Agent 仅可调用已注册的 7 个工具，禁止越权。
+- **工具白名单**：Agent 仅可调用已注册的 11 个工具（7 业务 + 4 沙箱只读），禁止越权。
+- **沙箱边界隔离**：数据沙箱复用系统库 `agent_bi` 内的独立 `sandbox` schema，SQL 一律 `sandbox.表名` 全限定；`assertAllTablesInSandbox` 强制所有 FROM/JOIN 表名带 `sandbox.` 前缀，杜绝经由沙箱工具越权访问 `public` 业务表或 `bi_*` 系统表。M1 仅开放只读，写工具（M2）与对话确认（M2）/ Excel 上传与审计（M3）按里程碑逐步开放。
 - **资源上限**：单轮推理步数上限、结果行数 / 字符数裁剪，防止死循环与超长返回。
 - **多级缓存**：Caffeine（L1 本地）+ Redis（L2）两级缓存，降低向量检索与重复查询开销。
 - **鉴权**：Sa-Token 最简登录拦截，未登录访问受保护接口返回 401；大屏分享页通过 `access_token` 免登录只读访问。

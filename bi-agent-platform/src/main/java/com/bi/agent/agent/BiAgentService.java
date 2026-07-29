@@ -11,7 +11,12 @@ import com.bi.agent.agent.tool.Nl2SqlTool;
 import com.bi.agent.agent.tool.RagSearchTool;
 import com.bi.agent.agent.tool.RunSqlTool;
 import com.bi.agent.agent.tool.SelectChartTool;
+import com.bi.agent.agent.tool.SandboxListTablesTool;
+import com.bi.agent.agent.tool.SandboxListColumnsTool;
+import com.bi.agent.agent.tool.SandboxNl2SqlTool;
+import com.bi.agent.agent.tool.SandboxRunSqlTool;
 import com.bi.agent.bi.service.BiQueryService;
+import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.IBiAlertRuleService;
 import com.bi.agent.bi.service.IBiDatasourceService;
 import com.bi.agent.bi.service.IBiKnowledgeService;
@@ -59,6 +64,9 @@ public class BiAgentService {
     /** 单轮最大工具调用步数（与 AgentSession 内的上限保持一致） */
     private static final int MAX_STEPS = 8;
 
+    /** 数据沙箱特殊数据源标志：前端传 datasourceId=0 表示锁定沙箱（sandbox schema） */
+    public static final Long SANDBOX_DS_ID = 0L;
+
     private final LlmService llmService;
     private final AgentMemory memory;
     private final Executor agentTaskExecutor;
@@ -67,6 +75,7 @@ public class BiAgentService {
     private final IBiKnowledgeService knowledgeService;
     private final IBiAlertRuleService alertRuleService;
     private final ChartSelector chartSelector;
+    private final SandboxQueryService sandboxQueryService;
     private final DataProbeService dataProbeService;
 
     public BiAgentService(LlmService llmService,
@@ -74,6 +83,7 @@ public class BiAgentService {
                          @Qualifier("agentTaskExecutor") Executor agentTaskExecutor,
                          IBiDatasourceService datasourceService,
                          BiQueryService queryService,
+                         SandboxQueryService sandboxQueryService,
                          IBiKnowledgeService knowledgeService,
                          IBiAlertRuleService alertRuleService,
                          ChartSelector chartSelector,
@@ -86,6 +96,7 @@ public class BiAgentService {
         this.knowledgeService = knowledgeService;
         this.alertRuleService = alertRuleService;
         this.chartSelector = chartSelector;
+        this.sandboxQueryService = sandboxQueryService;
         this.dataProbeService = dataProbeService;
     }
 
@@ -105,8 +116,15 @@ public class BiAgentService {
         try {
             // 1. 组装对话历史（含记忆回填 + 本轮 user）
             List<Map<String, Object>> messages = new ArrayList<>();
+            // 解析沙箱作用域：datasourceId == 0 表示全部沙箱；< 0 表示具体沙箱库（dbId = -id）
+            Long sandboxDbId = (datasourceId != null && datasourceId < 0) ? -datasourceId : null;
             String sysPrompt = buildSystemPrompt();
-            if (datasourceId != null) {
+        if (datasourceId != null) {
+            if (SANDBOX_DS_ID.equals(datasourceId) || datasourceId < 0) {
+                // 沙箱模式：用沙箱专属系统提示词（仅暴露 4 个沙箱只读工具，
+                // 避免模型调用未注册的 rag_search / select_chart / analyze_alert 而报未知工具）
+                sysPrompt = buildSandboxSystemPrompt(sandboxDbId);
+            } else {
                 StringBuilder prefix = new StringBuilder();
                 prefix.append("【当前用户已在前端锁定数据源 ID=").append(datasourceId)
                         .append("，所有 DB 工具必须直接用它，禁止更改 datasourceId 参数】\n");
@@ -120,6 +138,7 @@ public class BiAgentService {
                 }
                 sysPrompt = prefix + sysPrompt;
             }
+        }
             messages.add(Map.of("role", "system", "content", sysPrompt));
             for (Map<String, Object> h : memory.get(userId, sessionId)) {
                 messages.add(h);
@@ -128,7 +147,7 @@ public class BiAgentService {
 
             // 2. 手写 ReAct 循环（含工具调用 + 推理轨迹），顺便收集 select_chart 图表
             List<Map<String, Object>> charts = new ArrayList<>();
-            List<AgentTool> requestTools = buildTools(datasourceId, query);
+            List<AgentTool> requestTools = buildTools(datasourceId, sandboxDbId, query);
             String finalAnswer = runReactLoop(messages, session, requestTools, charts);
             // 归一化为正常对话样式（去掉 ### 、** 等 Markdown 标记）
             finalAnswer = normalizeAnswer(finalAnswer);
@@ -167,8 +186,17 @@ public class BiAgentService {
      * DB 类工具以 userDsId 作为【最高优先级】缺省数据源；
      * 仅当用户未选择（userDsId == null）时，模型才可在 JSON 参数里通过 datasourceId 指定。
      */
-    private List<AgentTool> buildTools(Long userDsId, String userQuery) {
+    private List<AgentTool> buildTools(Long userDsId, Long sandboxDbId, String userQuery) {
         List<AgentTool> t = new ArrayList<>();
+        if (userDsId != null && (SANDBOX_DS_ID.equals(userDsId) || userDsId < 0)) {
+            // 沙箱模式：注册沙箱专用工具集（名称与业务库一致，但指向 sandbox；M1 仅只读）
+            // sandboxDbId 为 null 表示全部沙箱库；非 null 表示锁定到某一具体沙箱库的作用域
+            t.add(new SandboxListTablesTool(sandboxQueryService, sandboxDbId));
+            t.add(new SandboxListColumnsTool(sandboxQueryService));
+            t.add(new SandboxNl2SqlTool(sandboxQueryService, sandboxDbId));
+            t.add(new SandboxRunSqlTool(sandboxQueryService));
+            return t;
+        }
         t.add(new ListTablesTool(datasourceService, userDsId));
         t.add(new ListColumnsTool(datasourceService, userDsId));
         t.add(new Nl2SqlTool(queryService, userDsId));
@@ -366,6 +394,45 @@ public class BiAgentService {
                 12. 【图表描述须忠于真实类型】若你调用了 select_chart，图表类型由系统按数据与你的意图自动决定。你【不得】在文字里把它说成"占比/饼图"，除非它确实是占比类图表。描述图表时聚焦"数据说明了什么"（例如"从 7 月到 9 月，华东销售额逐月走高"），而不是"我画了什么图"。
                 13. 【用户指定图表类型时必须显式传递】当用户明确说"我要折线图/柱状图/饼图"时，调用 select_chart 必须同时传入 chartType 参数（line/bar/pie 等）强制指定，不要依赖系统自动猜测。chartType 参数仅在用户明确指定图表类型时使用；用户未指定时留空，由系统自动选择。
                 """;
+    }
+
+    /**
+     * 沙箱模式专属系统提示词：仅暴露 4 个沙箱只读工具（list_tables / list_columns / nl2sql / run_sql），
+     * 刻意不提 rag_search / select_chart / analyze_alert——这些在沙箱工具集中未注册，模型若调用会报「未知工具」。
+     * nl2sql 已在后端完成智能选图与数据解读并随结果一并返回，故无需单独 select_chart。
+     *
+     * @param sandboxDbId 作用域沙箱库 id；为 null 表示全部沙箱库
+     */
+    private String buildSandboxSystemPrompt(Long sandboxDbId) {
+        String scope = (sandboxDbId == null)
+                ? "所有沙箱库（整个 sandbox schema）下的表"
+                : "已锁定的某一个沙箱库（dbId=" + sandboxDbId + "）下的表";
+        return """
+                你是一个运行在「数据沙箱」中的 BI 数据分析智能体。用户把自行粘贴或导入的数据放进隔离的 sandbox 库，
+                你只能对它做只读分析，源业务数据绝不被触碰。用简洁专业的中文给出结论。
+
+                当前作用域：%SCOPE%。分析前先 list_tables 看清作用域内到底有哪些表，再针对它们提问。
+
+                可用工具（仅以下 4 个，全部只读、且只针对 sandbox schema）：
+                - list_tables：列出当前作用域内数据沙箱的所有表（返回的是物理表名，形如 marts__sales，
+                  其中库前缀与表名之间用双下划线 __ 分隔）。分析前先「看一眼」有哪些表及其全限定名。
+                - list_columns：列出某张沙箱表的字段（列名、类型）。拼 SQL 前务必用本工具确认真实列名，禁止臆造。
+                  传入的表名必须是 list_tables 返回的物理名（如 marts__sales）。
+                - nl2sql：把自然语言问题转成 SQL 并在沙箱执行，直接返回 SQL、字段、数据行、推荐图表与数据解读。
+                  【无需再调用 select_chart】——图表与解读已随本工具一同返回。
+                - run_sql：在沙箱内执行一条【只读】SQL（仅 SELECT/WITH），表名必须用 sandbox."物理名" 全限定，
+                  返回字段与数据行。
+
+                工作准则：
+                1. 凡要 SELECT 某张表，必须先 list_tables 确认物理表名、再 list_columns 确认字段，禁止臆造表名/列名。
+                2. 所有 SQL 的表名一律用 sandbox."物理名" 形式（如 sandbox."marts__sales"）；禁止访问 public 或其他 schema；
+                   沙箱内不做任何写操作（INSERT/UPDATE/DELETE/DDL 一律禁止）。
+                3. 数据查询类问题优先用 nl2sql（已含选图与解读）；需要自己核对/取数时用 run_sql。
+                4. 只做只读分析，绝不执行写操作。
+                5. 结论尽量引用工具返回的真实数字；没有真实数据时如实说明，绝不编造任何数字或趋势。
+                6. 最终回答用自然流畅的中文口语呈现，不使用 Markdown 排版（禁止 ### /**/__/> 等符号），用自然换行与「1. 2. 3.」序号组织。
+                7. 不要出现「图表已生成 / 已调用工具」这类自述；图表由前端直接渲染，直接给数据结论、原因与建议。
+                """.replace("%SCOPE%", scope);
     }
 
     /**

@@ -8,6 +8,7 @@ import KnowledgeView from '@/views/KnowledgeView.vue'
 import DatabaseView from '@/views/DatabaseView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import OcrView from '@/views/OcrView.vue'
+import SandboxView from '@/views/SandboxView.vue'
 
 const routes = [
   { path: '/login', name: 'login', component: LoginView },
@@ -25,7 +26,8 @@ const routes = [
       { path: 'knowledge', name: 'knowledge', component: KnowledgeView, meta: { requiresAuth: true } },
       { path: 'database', name: 'database', component: DatabaseView, meta: { requiresAuth: true } },
       { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
-      { path: 'ocr', name: 'ocr', component: OcrView, meta: { requiresAuth: true } }
+      { path: 'ocr', name: 'ocr', component: OcrView, meta: { requiresAuth: true } },
+      { path: 'sandbox', name: 'sandbox', component: SandboxView, meta: { requiresAuth: true } }
     ]
   },
   { path: '/:pathMatch(.*)*', redirect: '/' }

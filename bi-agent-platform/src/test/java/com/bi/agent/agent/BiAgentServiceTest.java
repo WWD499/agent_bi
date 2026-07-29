@@ -4,6 +4,7 @@ import com.bi.agent.bi.service.BiQueryService;
 import com.bi.agent.bi.service.IBiAlertRuleService;
 import com.bi.agent.bi.service.IBiDatasourceService;
 import com.bi.agent.bi.service.IBiKnowledgeService;
+import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
@@ -58,6 +59,8 @@ class BiAgentServiceTest {
     @Mock
     private DataProbeService dataProbeService;
     @Mock
+    private SandboxQueryService sandboxQueryService;
+    @Mock
     private SseEmitter emitter;
 
     private BiAgentService service;
@@ -66,7 +69,7 @@ class BiAgentServiceTest {
     void setup() {
         Executor direct = Runnable::run; // 同步执行，便于测试断言
         service = new BiAgentService(llmService, memory, direct,
-                datasourceService, queryService, knowledgeService, alertRuleService, chartSelector, dataProbeService);
+                datasourceService, queryService, sandboxQueryService, knowledgeService, alertRuleService, chartSelector, dataProbeService);
         when(memory.get(anyString(), anyString())).thenReturn(List.of());
     }
 

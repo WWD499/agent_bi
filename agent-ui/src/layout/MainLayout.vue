@@ -38,6 +38,10 @@
           <el-icon><Picture /></el-icon>
           <span>OCR 识别</span>
         </el-menu-item>
+        <el-menu-item index="/sandbox">
+          <el-icon><Box /></el-icon>
+          <span>数据沙箱</span>
+        </el-menu-item>
       </el-menu>
 
       <div class="user">
@@ -59,7 +63,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatDotRound, DataAnalysis, Warning, Collection, Coin, Monitor, Sunny, Moon, SwitchButton, Picture } from '@element-plus/icons-vue'
+import { ChatDotRound, DataAnalysis, Warning, Collection, Coin, Monitor, Sunny, Moon, SwitchButton, Picture, Box } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
 
 const route = useRoute()
