@@ -151,6 +151,13 @@ public class SandboxQueryService {
             throw new BizException("SQL 不能为空");
         }
         sql = extractSql(sql);
+        // 容错：模型有时会用「短名」(如 demo_monthly_revenue) 拼 SQL，但沙箱物理表名带库前缀
+        // (sales_dm__demo_monthly_revenue)。执行前按元数据把短名重写回物理名，避免「表不存在」导致查询失败。
+        String resolved = resolveSandboxTableNames(sql);
+        if (!resolved.equals(sql)) {
+            log.info("沙箱表名容错重写：{} -> {}", sql, resolved);
+            sql = resolved;
+        }
         // 前 4 层只读校验（不传表名白名单，表名边界由 assertAllTablesInSandbox 保证）
         sqlValidator.validate(sql);
         assertAllTablesInSandbox(sql);
@@ -315,6 +322,53 @@ public class SandboxQueryService {
                         + " schema 下的表，请使用 " + SANDBOX_SCHEMA + "." + schema + " 全限定形式");
             }
         }
+    }
+
+    /**
+     * 把 SQL 中引用的「短表名」按元数据重写回物理名，规避模型用人类可读简称(如 demo_monthly_revenue)拼 SQL
+     * 而报「表不存在」的问题。规则：
+     * <ul>
+     *   <li>遍历所有沙箱表，建 short(table_name) → physical_name 映射；</li>
+     *   <li>仅当某个 short 在所有表中唯一时重写，避免跨库同名造成歧义；</li>
+     *   <li>只重写 {@code sandbox.表名} 形态（含或不带引号），不触碰其他 schema。</li>
+     * </ul>
+     */
+    private String resolveSandboxTableNames(String sql) {
+        if (sql == null || sql.isEmpty()) {
+            return sql;
+        }
+        Map<String, String> shortToPhysical = new HashMap<>();
+        for (BiSandboxTable rec : sandboxMapper.selectAll()) {
+            if (rec.getTableName() == null || rec.getPhysicalName() == null) {
+                continue;
+            }
+            String key = rec.getTableName().toLowerCase();
+            if (shortToPhysical.containsKey(key)) {
+                // 出现同名短名（不同库），标记歧义，跳过重写
+                shortToPhysical.put(key, "__AMBIGUOUS__");
+            } else {
+                shortToPhysical.put(key, rec.getPhysicalName());
+            }
+        }
+        if (shortToPhysical.isEmpty()) {
+            return sql;
+        }
+        // 匹配 sandbox."name" / sandbox.'name' / sandbox.name（引号可选且前后一致）
+        Pattern p = Pattern.compile("(?i)\\bsandbox\\.([\"'`]?)([A-Za-z_][A-Za-z0-9_]*)\\1");
+        Matcher m = p.matcher(sql);
+        StringBuffer sb = new StringBuffer();
+        while (m.find()) {
+            String name = m.group(2);
+            String physical = shortToPhysical.get(name.toLowerCase());
+            if (physical != null && !"__AMBIGUOUS__".equals(physical) && !physical.equalsIgnoreCase(name)) {
+                String quote = m.group(1);
+                m.appendReplacement(sb, "sandbox." + quote + physical + quote);
+            } else {
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+            }
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /** 去掉 SQL 代码块标记与末尾分号（供 LLM 返回做清洗） */

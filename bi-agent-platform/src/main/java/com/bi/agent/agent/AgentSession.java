@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -65,6 +67,10 @@ public class AgentSession {
 
     public void emitDone() {
         send("done", "");
+    }
+
+    public void emitCharts(List<Map<String, Object>> charts) {
+        send("charts", charts == null ? new ArrayList<>() : charts);
     }
 
     public void emitError(String message) {

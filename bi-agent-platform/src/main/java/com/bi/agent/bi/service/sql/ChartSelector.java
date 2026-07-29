@@ -97,21 +97,30 @@ public class ChartSelector {
 
         // ---- 用户意图优先（最高优先级） ----
 
-        // 意图A：占比/比例/分布 → 饼图
-        // 注意：上限放宽到31，覆盖「每月(12行)/每天(31行)」等时间维度占比，
-        // 否则时间序列表征会被 rowCount<=10 误杀、降级成折线图。
-        if (isProportionIntent(userQuery) && !firstColNumeric && rowCount <= 31) {
-            if (hasAnyNumericColumn(columns, data, 1)) {
-                log.info("选图：饼图（用户意图：占比/比例/分布）");
-                return ChartType.PIE;
-            }
-        }
-
-        // 意图B：趋势/变化/增长 → 折线图
+        // 意图A：趋势/变化/增长/折线 → 折线图（优先级最高）
         if (isTrendIntent(userQuery) && colCount >= 2) {
             if (hasAnyNumericColumn(columns, data, 1)) {
                 log.info("选图：折线图（用户意图：趋势/变化）");
                 return ChartType.LINE;
+            }
+        }
+
+        // 意图A+：第一列是时间维度，且用户提到分布/变化/逐月等时间相关词 → 折线图
+        // 避免"月度收入分布"这类含"分布"但被误判成饼图的情况
+        if (firstColTime && colCount >= 2 && hasAnyNumericColumn(columns, data, 1)) {
+            if (isTimeDistributionIntent(userQuery)) {
+                log.info("选图：折线图（时间维度 + 分布/逐月意图）");
+                return ChartType.LINE;
+            }
+        }
+
+        // 意图B：占比/比例/百分比/构成/份额/饼图 → 饼图
+        // 注意：上限放宽到31，覆盖「每月(12行)/每天(31行)」等时间维度占比，
+        // 但第一列是时间列时已在上一步被拦截为折线。
+        if (isProportionIntent(userQuery) && !firstColNumeric && rowCount <= 31) {
+            if (hasAnyNumericColumn(columns, data, 1)) {
+                log.info("选图：饼图（用户意图：占比/比例/构成）");
+                return ChartType.PIE;
             }
         }
 
@@ -243,16 +252,21 @@ public class ChartSelector {
     // ==================== 意图识别 ====================
 
     /**
-     * 判断用户查询是否表达"占比/比例/分布"意图
+     * 判断用户查询是否表达"占比/比例/构成"意图。
+     * 注意："分布"一词单独出现时不触发饼图（因为"时间分布/地理分布"等更可能是折线/地图），
+     * 只有与占比类词汇同时出现、或明确说"饼图"时才返回 true。
      */
     private boolean isProportionIntent(String userQuery) {
         if (userQuery == null) return false;
         String q = userQuery.toLowerCase();
-        return q.contains("占比") || q.contains("比例") || q.contains("分布") ||
+        boolean hasProportionKeyword = q.contains("占比") || q.contains("比例") ||
                q.contains("百分比") || q.contains("构成") || q.contains("份额") ||
                q.contains("饼图") || q.contains("pie") ||
                q.contains("proportion") || q.contains("percentage") || q.contains("ratio") ||
-               q.contains("distribution") || q.contains("composition");
+               q.contains("composition");
+        // "分布"需与占比类词同时出现才视为占比分布
+        boolean hasDistribution = q.contains("分布") || q.contains("distribution");
+        return hasProportionKeyword || (hasDistribution && hasProportionKeyword);
     }
 
     /**
@@ -265,6 +279,19 @@ public class ChartSelector {
                q.contains("增长") || q.contains("下降") || q.contains("波动") ||
                q.contains("折线") || q.contains("line") ||
                q.contains("trend") || q.contains("change") || q.contains("growth");
+    }
+
+    /**
+     * 判断用户查询是否表达"时间维度上的分布/逐月/变化"意图（第一列是时间列时使用）。
+     * 例如"月度收入分布""逐月收入分布""全年收入分布"都应理解为时间趋势折线。
+     */
+    private boolean isTimeDistributionIntent(String userQuery) {
+        if (userQuery == null) return false;
+        String q = userQuery.toLowerCase();
+        return q.contains("分布") || q.contains("逐月") || q.contains("每月") ||
+               q.contains("月度") || q.contains("全年") || q.contains("时间") ||
+               q.contains("走势") || q.contains("变化") ||
+               q.contains("distribution") || q.contains("monthly") || q.contains("over time");
     }
 
     /**

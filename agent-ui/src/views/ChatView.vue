@@ -21,9 +21,15 @@
             <ChartBlock v-for="(c, ci) in (m.charts || [])" :key="'c' + ci" :option="c" />
           </div>
           <div class="answer-text">
-            <span v-if="answer">{{ answer }}</span>
+            <template v-if="answer">{{ answer }}</template>
             <span v-else-if="running" class="caret">▌</span>
           </div>
+          <ChartBlock
+            v-for="(c, ci) in currentCharts"
+            :key="'cc' + ci"
+            :option="c"
+            class="current-chart"
+          />
           <transition-group name="fade" tag="div" class="trace-wrap">
             <TracePanel v-for="(t, i) in trace" :key="i" :item="t" />
           </transition-group>
@@ -69,6 +75,8 @@ import ChartBlock from '@/components/ChartBlock.vue'
 
 const query = ref('')
 const answer = ref('')
+/** 当前流式回答伴随的图表（由后端 charts 事件推送），done 后并入 historyList */
+const currentCharts = ref([])
 const trace = ref([])
 const running = ref(false)
 const sessionId = ref(genSid())
@@ -143,16 +151,27 @@ function handleEvent(ev) {
     trace.value.push({ type: 'reasoning', text: data })
   } else if (event === 'error') {
     trace.value.push({ type: 'error', text: data })
+  } else if (event === 'charts') {
+    // 后端在流式文本结束后，把本轮最终图表一次性推过来；实时渲染在 answer 区下方
+    let parsed
+    try {
+      parsed = JSON.parse(data)
+    } catch {
+      parsed = []
+    }
+    currentCharts.value = Array.isArray(parsed) ? parsed : []
   } else if (event === 'done') {
-    // 本轮结束：把流式最终答案固化成气泡，并把本轮推理中 select_chart 生成的
-    // 图表一起带进最终汇总，避免「图在推理过程中渲染、汇总时却消失」
-    const charts = trace.value
-      .filter((t) => t.type === 'tool_result' && t.chartOption)
-      .map((t) => t.chartOption)
+    // 本轮结束：把流式最终答案固化成气泡，并合并后端推送的图表
+    const charts = currentCharts.value.length
+      ? currentCharts.value
+      : trace.value
+          .filter((t) => t.type === 'tool_result' && t.chartOption)
+          .map((t) => t.chartOption)
     if (answer.value || charts.length) {
       historyList.value.push({ role: 'assistant', content: answer.value || '', charts })
     }
     answer.value = ''
+    currentCharts.value = []
     trace.value = []
     running.value = false
   }
@@ -202,16 +221,18 @@ function newSession() {
   sessionId.value = genSid()
   localStorage.setItem(LS_SID, sessionId.value)
   answer.value = ''
+  currentCharts.value = []
   trace.value = []
   historyList.value = []
 }
 
 /** 从历史抽屉加载某会话：切换 sid + 渲染历史气泡，后续可继续对话 */
-function   onOpenSession({ sessionId: sid, messages }) {
+function onOpenSession({ sessionId: sid, messages }) {
   sessionId.value = sid
   localStorage.setItem(LS_SID, sid)
   historyList.value = (messages || []).map((m) => ({ role: m.role, content: m.content, charts: m.charts || [] }))
   answer.value = ''
+  currentCharts.value = []
   trace.value = []
 }
 
@@ -374,6 +395,10 @@ onMounted(async () => {
   50% {
     opacity: 0;
   }
+}
+.current-chart {
+  margin-top: 12px;
+  height: 340px;
 }
 .trace-wrap {
   margin-top: 16px;

@@ -41,6 +41,25 @@ class ChartSelectorTest {
         return rows;
     }
 
+    /** 构造 [year_month, revenue] 这种 2 列、12 行的时间序列结果 */
+    private List<String> timeColumns() {
+        List<String> c = new ArrayList<>();
+        c.add("year_month");
+        c.add("revenue");
+        return c;
+    }
+
+    private List<JSONObject> timeData() {
+        List<JSONObject> rows = new ArrayList<>();
+        for (int i = 1; i <= 12; i++) {
+            JSONObject r = new JSONObject();
+            r.put("year_month", String.format("2024-%02d", i));
+            r.put("revenue", 80 + i * 5);
+            rows.add(r);
+        }
+        return rows;
+    }
+
     /** 回归：用户说"趋势"，即使数据只有 [区域, 销售额] 6 行，也必须折线图，不能饼图 */
     @Test
     void trendIntent_overridesPieFallback() {
@@ -57,6 +76,24 @@ class ChartSelectorTest {
                 columns(), data(), "分析各区域销售额占比构成");
         assertEquals(ChartSelector.ChartType.PIE, ct,
                 "含'占比/构成'的查询应选饼图");
+    }
+
+    /** 回归：第一列为时间列时，"月度收入分布"应理解为时间分布，选折线图而非饼图 */
+    @Test
+    void timeDistributionIntent_selectsLine() {
+        ChartSelector.ChartType ct = selector.selectChart(
+                timeColumns(), timeData(), "月度收入分布");
+        assertEquals(ChartSelector.ChartType.LINE, ct,
+                "第一列为时间列且查询含'分布'时，应理解为时间分布，选折线图");
+    }
+
+    /** 回归：用户同时说"趋势或分布"，应优先趋势意图选折线图 */
+    @Test
+    void trendOrDistributionIntent_selectsLine() {
+        ChartSelector.ChartType ct = selector.selectChart(
+                timeColumns(), timeData(), "月度收入趋势或分布");
+        assertEquals(ChartSelector.ChartType.LINE, ct,
+                "同时含'趋势'和'分布'时，应优先趋势意图选折线图");
     }
 
     /** 对照组：意图为 null（旧 bug 的等价态），退化成数据驱动 → 6 行少类别兜底饼图 */

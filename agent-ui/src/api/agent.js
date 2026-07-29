@@ -6,14 +6,16 @@ export function login(username, password) {
 }
 
 // 解析单个 SSE 文本块（Spring SseEmitter 输出：event:xxx\ndata:yyy\n）
+// 注意：一个事件可包含多行 data:，按 SSE 规范应使用 '\n' 拼接，否则 token 中的换行会丢失，
+// 导致流式输出时整段文本挤成一行，刷新后从历史读取才正常换行。
 function parseSseBlock(block) {
   let event = 'message'
-  let data = ''
+  const dataLines = []
   for (const line of block.split('\n')) {
     if (line.startsWith('event:')) event = line.slice(6).trim()
-    else if (line.startsWith('data:')) data += line.slice(5).trim()
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5))
   }
-  return { event, data }
+  return { event, data: dataLines.join('\n') }
 }
 
 /**

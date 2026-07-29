@@ -15,6 +15,7 @@ import com.bi.agent.agent.tool.SandboxListTablesTool;
 import com.bi.agent.agent.tool.SandboxListColumnsTool;
 import com.bi.agent.agent.tool.SandboxNl2SqlTool;
 import com.bi.agent.agent.tool.SandboxRunSqlTool;
+import com.bi.agent.agent.tool.SandboxSelectChartTool;
 import com.bi.agent.bi.service.BiQueryService;
 import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.IBiAlertRuleService;
@@ -121,8 +122,8 @@ public class BiAgentService {
             String sysPrompt = buildSystemPrompt();
         if (datasourceId != null) {
             if (SANDBOX_DS_ID.equals(datasourceId) || datasourceId < 0) {
-                // 沙箱模式：用沙箱专属系统提示词（仅暴露 4 个沙箱只读工具，
-                // 避免模型调用未注册的 rag_search / select_chart / analyze_alert 而报未知工具）
+                // 沙箱模式：用沙箱专属系统提示词（暴露 5 个沙箱只读工具，
+                // 避免模型调用未注册的 rag_search / analyze_alert 而报未知工具）
                 sysPrompt = buildSandboxSystemPrompt(sandboxDbId);
             } else {
                 StringBuilder prefix = new StringBuilder();
@@ -154,6 +155,11 @@ public class BiAgentService {
 
             // 3. 逐字（分片）流式回传最终答案，营造流式效果
             streamAnswer(finalAnswer, session);
+
+            // 3.5 把本轮生成的图表一次性推给前端，使流式过程中就能渲染，避免只在 done 后才出现
+            if (!charts.isEmpty()) {
+                session.emitCharts(charts);
+            }
 
             // 4. 记忆落盘（本轮 user + 最终 assistant，含图表）
             // 图表随 assistant 消息的 charts 字段一起存 Redis，使刷新/切走再回来时图仍在
@@ -195,6 +201,7 @@ public class BiAgentService {
             t.add(new SandboxListColumnsTool(sandboxQueryService));
             t.add(new SandboxNl2SqlTool(sandboxQueryService, sandboxDbId));
             t.add(new SandboxRunSqlTool(sandboxQueryService));
+            t.add(new SandboxSelectChartTool(sandboxQueryService, chartSelector, userQuery));
             return t;
         }
         t.add(new ListTablesTool(datasourceService, userDsId));
@@ -369,10 +376,15 @@ public class BiAgentService {
                 - run_sql：在指定数据源上执行一条【只读】SQL（仅 SELECT/WITH），返回字段与数据行。用于你自己拼好 SQL 后取数、或核对数据。
                 - rag_search：在业务知识库中做语义检索（RAG），获取业务口径、指标定义、历史查询经验等背景知识。
                 - select_chart：为一条只读 SQL 的查询结果智能选图，并生成可直接渲染的 ECharts 配置。
+                  【强制】当用户说"生成图表/画成图/可视化/把结果用图表展示"时，你必须调用 select_chart 出图，
+                  禁止只用文字描述图表或说"图表已生成"。
+                  当用户问题同时出现"趋势/分布/变化"等模糊表述时，优先按趋势（折线图）处理；
+                  若你判断应该用折线图，请在调用 select_chart 时显式传入 chartType="line"，
+                  避免文字里写"折线图"但实际生成其他类型图表。
                 - analyze_alert：对指定预警规则（ruleId）做实时异常分析，读取当前指标值、与阈值比对、触发时给出 AI 原因分析。
 
                 工作准则：
-                1. 接到数据查询类问题，先思考需要哪些信息；务必先用 list_tables / list_columns 摸清库表结构与字段名，再调用 nl2sql（或自己拼 SQL 经 run_sql）取数，需要可视化时再 select_chart。
+                1. 接到数据查询类问题，先思考需要哪些信息；务必先用 list_tables / list_columns 摸清库表结构与字段名，再调用 nl2sql（或自己拼 SQL 经 run_sql）取数；用户明确要求可视化时【必须】调用 select_chart 出真实图表，禁止文字替代。
                    【强制前置】只要你要从某张表 SELECT 字段，就必须先用 list_columns 确认该表的真实列名与类型，禁止凭训练记忆臆造列名。例如 fact_sales_order 的真实列是 region_id（不是 region），维度表用 * _id 主键关联；字段名一律以 list_columns 的返回为准，绝不能"觉得应该是这个列"。
                 2. 涉及专业术语或口径不清晰时，先 rag_search 补充领域知识。
                 3. 数据源使用规则：若用户已在前端选择数据源，所有 DB 类工具（list_tables / list_columns / nl2sql / run_sql / select_chart）默认就用该数据源，【不要】在调用参数里传入其他 datasourceId；只有在用户问题中明确要求查"另一个库 / 其他数据源"时才允许更换。若用户未选数据源，则 datasourceId 可省略（默认 1）。
@@ -392,14 +404,14 @@ public class BiAgentService {
                 10. 【趋势类必须带时间维度】当用户意图是"趋势/变化/走势/增长/波动/逐月"时，你写的 SQL 必须包含时间维度——按 月/周/日 分组，或保留日期/月份列——否则根本画不出趋势线。若探查发现当前数据只有区域/品类等汇总、没有时间字段，应如实告知用户「现有数据仅含区域汇总，无法展示随时间的变化趋势」，【不要】把区域排名当成趋势，也【不要】强行画饼图凑数。
                 11. 【最终答案禁止写工具自述】给用户的最后回答里，【不要】出现"图表已生成 / 已为您生成图表 / 已调用某某工具 / 以下是工具返回"这类描述你自身执行动作的话。图表会由前端直接渲染，无需用文字说明"图已生成"。直接给数据结论、原因与建议。
                 12. 【图表描述须忠于真实类型】若你调用了 select_chart，图表类型由系统按数据与你的意图自动决定。你【不得】在文字里把它说成"占比/饼图"，除非它确实是占比类图表。描述图表时聚焦"数据说明了什么"（例如"从 7 月到 9 月，华东销售额逐月走高"），而不是"我画了什么图"。
-                13. 【用户指定图表类型时必须显式传递】当用户明确说"我要折线图/柱状图/饼图"时，调用 select_chart 必须同时传入 chartType 参数（line/bar/pie 等）强制指定，不要依赖系统自动猜测。chartType 参数仅在用户明确指定图表类型时使用；用户未指定时留空，由系统自动选择。
+                    特别地：当你用文字说"折线图"时，必须确保 select_chart 实际生成的是折线图（可显式传 chartType="line"）；说"饼图"时同理。禁止文字与图表类型不一致。
+                13. 【用户指定图表类型时必须显式传递】当用户明确说"我要折线图/柱状图/饼图"或你判断某图表类型最合适时，调用 select_chart 必须同时传入 chartType 参数（line/bar/pie 等）强制指定，不要依赖系统自动猜测。chartType 参数在意图明确时建议使用，以确保文字描述与实际图表完全一致。
                 """;
     }
 
     /**
-     * 沙箱模式专属系统提示词：仅暴露 4 个沙箱只读工具（list_tables / list_columns / nl2sql / run_sql），
-     * 刻意不提 rag_search / select_chart / analyze_alert——这些在沙箱工具集中未注册，模型若调用会报「未知工具」。
-     * nl2sql 已在后端完成智能选图与数据解读并随结果一并返回，故无需单独 select_chart。
+     * 沙箱模式专属系统提示词：暴露 5 个沙箱只读工具（list_tables / list_columns / nl2sql / run_sql / select_chart）。
+     * 刻意不提 rag_search / analyze_alert——这些在沙箱工具集中未注册，模型若调用会报「未知工具」。
      *
      * @param sandboxDbId 作用域沙箱库 id；为 null 表示全部沙箱库
      */
@@ -413,25 +425,35 @@ public class BiAgentService {
 
                 当前作用域：%SCOPE%。分析前先 list_tables 看清作用域内到底有哪些表，再针对它们提问。
 
-                可用工具（仅以下 4 个，全部只读、且只针对 sandbox schema）：
+                可用工具（仅以下 5 个，全部只读、且只针对 sandbox schema）：
                 - list_tables：列出当前作用域内数据沙箱的所有表（返回的是物理表名，形如 marts__sales，
                   其中库前缀与表名之间用双下划线 __ 分隔）。分析前先「看一眼」有哪些表及其全限定名。
                 - list_columns：列出某张沙箱表的字段（列名、类型）。拼 SQL 前务必用本工具确认真实列名，禁止臆造。
                   传入的表名必须是 list_tables 返回的物理名（如 marts__sales）。
                 - nl2sql：把自然语言问题转成 SQL 并在沙箱执行，直接返回 SQL、字段、数据行、推荐图表与数据解读。
-                  【无需再调用 select_chart】——图表与解读已随本工具一同返回。
                 - run_sql：在沙箱内执行一条【只读】SQL（仅 SELECT/WITH），表名必须用 sandbox."物理名" 全限定，
                   返回字段与数据行。
+                - select_chart：为一条已确认的只读 SQL 结果智能选图，生成可直接渲染的 ECharts 配置。
+                  【强制】当用户说"生成图表/画成图/可视化/把结果用图表展示"时，你必须调用 select_chart 出图，
+                  禁止只用文字描述图表或说"图表已生成"；select_chart 只负责出图，不生成数据解读。
+                  当用户问题同时出现"趋势/分布/变化"等模糊表述时，优先按趋势（折线图）处理；
+                  若你判断应该用折线图，请在调用 select_chart 时显式传入 chartType="line"，
+                  避免文字里写"折线图"但实际生成其他类型图表。
 
                 工作准则：
                 1. 凡要 SELECT 某张表，必须先 list_tables 确认物理表名、再 list_columns 确认字段，禁止臆造表名/列名。
                 2. 所有 SQL 的表名一律用 sandbox."物理名" 形式（如 sandbox."marts__sales"）；禁止访问 public 或其他 schema；
+                   物理名【必须】包含库前缀（形如 dbkey__表名），绝不可把 list_tables 返回的名字里的 __ 前缀去掉再拼 SQL，
+                   否则会报「表不存在」。例如 list_tables 返回 marts__sales，则 SQL 必须写 sandbox."marts__sales"。
                    沙箱内不做任何写操作（INSERT/UPDATE/DELETE/DDL 一律禁止）。
-                3. 数据查询类问题优先用 nl2sql（已含选图与解读）；需要自己核对/取数时用 run_sql。
+                3. 数据查询类问题优先用 nl2sql（已含选图与解读）；需要自己核对/取数时用 run_sql；
+                   用户明确要求"生成图表"时【必须】用 run_sql 拿到数据后再调用 select_chart 出真实图表。
                 4. 只做只读分析，绝不执行写操作。
                 5. 结论尽量引用工具返回的真实数字；没有真实数据时如实说明，绝不编造任何数字或趋势。
                 6. 最终回答用自然流畅的中文口语呈现，不使用 Markdown 排版（禁止 ### /**/__/> 等符号），用自然换行与「1. 2. 3.」序号组织。
                 7. 不要出现「图表已生成 / 已调用工具」这类自述；图表由前端直接渲染，直接给数据结论、原因与建议。
+                8. 【图表描述与真实类型必须一致】如果你调用了 select_chart，最终文字里描述图表类型时
+                   必须与 select_chart 实际生成的类型一致：折线图就写"折线图"，饼图就写"饼图"，不要混用。
                 """.replace("%SCOPE%", scope);
     }
 
