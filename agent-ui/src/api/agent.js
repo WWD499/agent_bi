@@ -29,7 +29,7 @@ function parseSseBlock(block) {
  * @param {AbortSignal} p.signal  用于中断
  * @returns {Promise<void>} 流结束 resolve；网络错误 reject
  */
-export async function streamChat({ query, sessionId, datasourceId, token, onEvent, signal }) {
+export async function streamChat({ query, sessionId, datasourceId, token, onEvent, signal, allowWrite, skipConfirm }) {
   const resp = await fetch('/api/agent/chat', {
     method: 'POST',
     headers: {
@@ -37,7 +37,13 @@ export async function streamChat({ query, sessionId, datasourceId, token, onEven
       satoken: token || '',
       Authorization: 'Bearer ' + (token || '')
     },
-    body: JSON.stringify({ query, sessionId, datasourceId: datasourceId ?? null }),
+    body: JSON.stringify({
+      query,
+      sessionId,
+      datasourceId: datasourceId ?? null,
+      allowWrite: !!allowWrite,
+      skipConfirm: !!skipConfirm
+    }),
     signal
   })
   if (!resp.ok) {
@@ -84,6 +90,15 @@ export function getHistory(sid) {
 // 删除单条会话：DELETE /api/agent/history/{sid}
 export function deleteHistory(sid) {
   return http.delete('/agent/history/' + sid).then((r) => r.data)
+}
+
+// 写工具确认（M2）：POST /api/agent/confirm
+// body：{ sessionId: String, approved: boolean } → Result<Boolean>
+// 在对话框弹出确认框后，用户点「同意 / 拒绝」即调用本接口唤醒 Agent 挂起的确认 future。
+export function confirmAgent(sessionId, approved) {
+  return http
+    .post('/agent/confirm', { sessionId, approved: !!approved })
+    .then((r) => r.data)
 }
 
 // 清空当前用户全部会话：DELETE /api/agent/history/clear

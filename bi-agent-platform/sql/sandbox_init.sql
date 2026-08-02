@@ -6,7 +6,7 @@
 CREATE SCHEMA IF NOT EXISTS sandbox;
 
 -- 2. 沙箱库（逻辑命名空间）——用户可新建多个「沙箱库」对表分组
---    db_key 是物理前缀键（英文/数字/下划线），物理表名 = db_key || '__' || table_name
+--    db_key 仅用于逻辑分组与展示，新表物理名 == 短名（不再拼接 db_key）；历史上曾用 db_key || '__' || table_name（见第 5 节迁移）
 CREATE TABLE IF NOT EXISTS bi_sandbox_db (
     id           BIGSERIAL PRIMARY KEY,
     db_key       VARCHAR(64) NOT NULL UNIQUE,    -- 物理前缀键（如 marts / sales_dm），用于拼 physical_name
@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS bi_sandbox_db (
 CREATE TABLE IF NOT EXISTS bi_sandbox_table (
     id            BIGSERIAL PRIMARY KEY,
     db_id         BIGINT NOT NULL DEFAULT 1,      -- 所属沙箱库 id（指向 bi_sandbox_db.id）
-    table_name    VARCHAR(200) NOT NULL,          -- 沙箱表短名（不含前缀，同库内唯一）
-    physical_name VARCHAR(200) NOT NULL,          -- 物理表名 = db_key || '__' || table_name（对应 sandbox."physical_name"）
+    table_name    VARCHAR(200) NOT NULL,          -- 沙箱表短名（全沙箱唯一，即用户给定的表名）
+    physical_name VARCHAR(200) NOT NULL,          -- 物理表名：新表 == table_name（短名）；历史兼容迁移表为旧拼接名 db_key__table_name
     display_name  VARCHAR(200),                   -- 用户友好显示名（可中文，如 部门表/员工表）；为空时前端回退到短名
     owner         VARCHAR(64),
     columns_json  TEXT,                           -- JSON: [{"name":"region","type":"TEXT"}, ...]
@@ -44,6 +44,22 @@ ALTER TABLE bi_sandbox_table
 -- 唯一约束：同一沙箱库内表名不可重复（跨库允许同名）
 DROP INDEX IF EXISTS uk_sandbox_table_name;
 CREATE UNIQUE INDEX IF NOT EXISTS uk_sandbox_table_uniq ON bi_sandbox_table(db_id, table_name);
+
+-- 6. 沙箱操作审计表（M3）：所有会改变沙箱物理数据/结构的操作均留痕，便于追溯
+--    operation：IMPORT_TEXT / IMPORT_DATASOURCE / IMPORT_FILE / CREATE_TABLE / MATERIALIZE / DROP_TABLE / DROP_DB
+--    success：1 成功 / 0 失败；fail_reason 仅在失败时填写
+CREATE TABLE IF NOT EXISTS bi_sandbox_audit (
+    id           BIGSERIAL PRIMARY KEY,
+    operator     VARCHAR(64) NOT NULL DEFAULT 'anonymous',  -- 操作人（Sa-Token 登录 id）
+    operation    VARCHAR(32) NOT NULL,
+    target       VARCHAR(256) NOT NULL DEFAULT '',           -- 操作对象（物理表名 / 源表名 / 库名）
+    detail       TEXT,                                       -- JSON：列定义 / 行数 / 来源等
+    success      SMALLINT NOT NULL DEFAULT 1,                -- 1 成功 / 0 失败
+    fail_reason  VARCHAR(500),
+    create_time  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_sandbox_audit_time ON bi_sandbox_audit(create_time DESC);
+CREATE INDEX IF NOT EXISTS idx_sandbox_audit_op ON bi_sandbox_audit(operation);
 
 -- 4. 种子默认库（存量表全部归到 default 库，物理名统一加 default__ 前缀）
 INSERT INTO bi_sandbox_db (db_key, name, remark)

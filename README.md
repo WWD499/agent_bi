@@ -12,11 +12,11 @@ agent_bi 以**单 Agent 推理引擎**为核心：用户用自然语言提问，
 |------|------|
 | **自然语言分析（Agent）** | 单 Agent 多步推理引擎，自动拆解业务问题、调度工具、结合记忆给出带推理轨迹的答案（SSE 流式输出）。 |
 | **NL2SQL + RAG 增强** | 将自然语言转为 SQL 并在 PostgreSQL 业务库执行取数；结合 pgvector 向量库（bge-m3 嵌入）检索业务知识，增强生成质量与准确性。 |
-| **智能图表选型** | 依据数据形态（维度 / 指标 / 基数）自动推荐最合适的图表类型，并基于 ECharts 渲染。 |
-| **BI 数据大屏** | 基于 grid-layout-plus 的拖拽式大屏编排，支持图表 / 指标卡 / 图片三类组件；大屏可生成 `access_token` 对外**只读分享**。支持导出图片 / PDF。 |
+| **智能图表选型** | 依据数据形态（维度 / 指标 / 基数）自动推荐最合适的图表类型，并基于 ECharts 渲染；一次提问可生成多张图表，文字与图表在对话中交错呈现。 |
+| **BI 数据大屏** | 基于 grid-layout-plus 的拖拽式大屏编排，支持图表 / 指标卡 / 图片三类组件；大屏可生成 `access_token` 对外**只读分享**，支持导出图片 / PDF。更支持由 **Agent 对话式创建与更新大屏**：调用 `create_dashboard` / `update_dashboard` 工具即可新建大屏、或向已有大屏追加图表，对话内返回的深链可直接跳转打开。 |
 | **数据异常预警** | 规则引擎 + AI 双引擎分析，定时扫描关键指标；触发后可通过邮件（SMTP）等通道通知，并沉淀预警记录。 |
 | **OCR 文档识别** | 集成 PaddleOCR 本地服务，识别图片 / 文档中的文字，识别结果可一键沉淀为知识库条目。 |
-| **数据沙箱** | 用户在隔离的 `sandbox` schema 中自由分析、源业务数据零污染。导入两种方式：① **从数据源勾选克隆**——在「数据沙箱」页选已配置数据源、勾选表后一键克隆进沙箱（每表最多 1 万行）；② **粘贴导入**——直接粘贴 CSV/TSV。导入后支持表预览、NL2SQL、拖 SQL、选图、解读，并可一键切到「智能对话」让 Agent 基于沙箱分析。 |
+| **数据沙箱** | 用户在隔离的 `sandbox` schema 中自由分析、源业务数据零污染。导入三种方式：① **从数据源勾选克隆**——在「数据沙箱」页选已配置数据源、勾选表后一键克隆进沙箱（每表最多 1 万行）；② **粘贴导入**——直接粘贴 CSV/TSV；③ **上传导入（M3）**——上传 Excel（.xlsx/.xls）或 CSV，系统自动推断列类型建表写入。导入后支持表预览、NL2SQL、拖 SQL、选图、解读，并可一键切到「智能对话」让 Agent 基于沙箱分析。**Agent 写工具（M2）**：在沙箱内建表 / CTAS 落表 / 删表，每次执行前由 Agent 弹出确认框，用户同意才真正执行。**操作审计（M3）**：所有导入 / 写表 / 删库均写 `bi_sandbox_audit` 留痕，可在沙箱页查看「谁·何时·对哪张表·做了什么·是否成功」。 |
 
 ---
 
@@ -33,7 +33,7 @@ agent_bi 以**单 Agent 推理引擎**为核心：用户用自然语言提问，
 | OCR 服务 | **PaddleOCR**（Python FastAPI，`ocr-service/`）|
 | Agent 实现 | **手写 ReAct 工具调用循环**（未引入 Spring AI，规避其 1.0 GA 构件风险，零新增依赖）|
 
-**Agent 工具集（7 业务 + 4 沙箱只读）**：业务库 `Nl2SqlTool` / `RunSqlTool` / `RagSearchTool` / `ListTablesTool` / `ListColumnsTool` / `SelectChartTool` / `AnalyzeAlertTool`；锁定「数据沙箱」时自动切换为 4 个沙箱专用只读工具（`SandboxListTablesTool` / `SandboxListColumnsTool` / `SandboxNl2SqlTool` / `SandboxRunSqlTool`，名称与业务版一致但指向 `sandbox` schema）。
+**Agent 工具集（7 业务 + 8 沙箱）**：业务库 `Nl2SqlTool` / `RunSqlTool` / `RagSearchTool` / `ListTablesTool` / `ListColumnsTool` / `SelectChartTool` / `AnalyzeAlertTool`；锁定「数据沙箱」时自动切换为 8 个沙箱专用工具——5 个只读（`SandboxListTablesTool` / `SandboxListColumnsTool` / `SandboxNl2SqlTool` / `SandboxRunSqlTool` / `SandboxSelectChartTool`，名称与业务版一致但指向 `sandbox` schema）+ 3 个写工具（`SandboxCreateTableTool` 建表 / `SandboxMaterializeTool` 落表 CTAS / `SandboxDropTableTool` 删表，均 `requiresConfirmation=true`，执行前弹确认框）。此外，Agent 在沙箱与业务两种模式下均注册 `CreateDashboardTool` / `UpdateDashboardTool`，支持对话式创建与更新 BI 大屏。
 
 ---
 
@@ -148,8 +148,9 @@ python ocr_server.py                # 监听 http://localhost:8866
 ## 六、配置说明（安全边界）
 
 - **SQL 只读校验**：Agent 执行的 SQL 经只读校验，拦截 `INSERT/UPDATE/DELETE/DDL`，仅允许 `SELECT`。
-- **工具白名单**：Agent 仅可调用已注册的 11 个工具（7 业务 + 4 沙箱只读），禁止越权。
-- **沙箱边界隔离**：数据沙箱复用系统库 `agent_bi` 内的独立 `sandbox` schema，SQL 一律 `sandbox.表名` 全限定；`assertAllTablesInSandbox` 强制所有 FROM/JOIN 表名带 `sandbox.` 前缀，杜绝经由沙箱工具越权访问 `public` 业务表或 `bi_*` 系统表。M1 仅开放只读，写工具（M2）与对话确认（M2）/ Excel 上传与审计（M3）按里程碑逐步开放。
+- **工具白名单**：Agent 仅可调用已注册的 15 个工具（7 业务 + 8 沙箱，其中 3 个沙箱写工具需用户确认），禁止越权。
+- **沙箱边界隔离 + 写工具确认（M2）**：数据沙箱复用系统库 `agent_bi` 内的独立 `sandbox` schema，SQL 一律 `sandbox.表名` 全限定；`assertAllTablesInSandbox` 强制所有 FROM/JOIN 表名带 `sandbox.` 前缀，杜绝经由沙箱工具越权访问 `public` 业务表或 `bi_*` 系统表。M2 已开放沙箱写工具（建表 / 落表 CTAS / 删表），但**写工具均标记 `requiresConfirmation=true`**，Agent 执行前先 emit `confirm` 事件挂起等待，前端弹确认框，用户同意才真正落库；用户拒绝则降级为只读方案。
+- **导入与审计（M3）**：沙箱支持 Excel（.xlsx/.xls）/ CSV 上传导入，后端用 Apache POI / commons-csv 解析并自动推断列类型建表；所有导入 / 写表 / 删库操作均写 `bi_sandbox_audit` 审计表（`operator / operation / target / detail / success / fail_reason / create_time`），审计写入异常不影响主流程（旁路容错），可在「数据沙箱」页查看审计日志。
 - **资源上限**：单轮推理步数上限、结果行数 / 字符数裁剪，防止死循环与超长返回。
 - **多级缓存**：Caffeine（L1 本地）+ Redis（L2）两级缓存，降低向量检索与重复查询开销。
 - **鉴权**：Sa-Token 最简登录拦截，未登录访问受保护接口返回 401；大屏分享页通过 `access_token` 免登录只读访问。

@@ -69,6 +69,19 @@ public interface BiSandboxMapper {
     @Select("SELECT COUNT(1) FROM bi_sandbox_table WHERE db_id = #{dbId} AND table_name = #{tableName}")
     int countByDbAndTable(@Param("dbId") Long dbId, @Param("tableName") String tableName);
 
+    /**
+     * 物理表名不再拼接库前缀（见 SandboxQueryService 设计），同一 sandbox schema 下短名全局唯一。
+     * 建/导入/落表前用它做全局冲突校验，防止不同沙箱库产生同名物理表（schema 内无法共存）。
+     */
+    @Select("SELECT COUNT(1) FROM bi_sandbox_table WHERE table_name = #{tableName}")
+    int countByTableName(@Param("tableName") String tableName);
+
+    @Select("SELECT id, db_id, table_name, physical_name, display_name, owner, columns_json, row_count, source_type, remark, "
+            + "to_char(create_time, 'YYYY-MM-DD HH24:MI:SS') AS create_time, "
+            + "to_char(update_time, 'YYYY-MM-DD HH24:MI:SS') AS update_time "
+            + "FROM bi_sandbox_table WHERE display_name = #{displayName} ORDER BY create_time DESC LIMIT 1")
+    BiSandboxTable selectByDisplayName(@Param("displayName") String displayName);
+
     @Select("SELECT COUNT(1) FROM bi_sandbox_table WHERE db_id = #{dbId}")
     int countTablesByDbId(@Param("dbId") Long dbId);
 

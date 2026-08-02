@@ -2,20 +2,25 @@ package com.bi.agent.agent;
 
 import com.bi.agent.bi.service.BiQueryService;
 import com.bi.agent.bi.service.IBiAlertRuleService;
+import com.bi.agent.bi.service.IBiDashboardService;
 import com.bi.agent.bi.service.IBiDatasourceService;
 import com.bi.agent.bi.service.IBiKnowledgeService;
+import com.bi.agent.bi.service.SandboxImportService;
 import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
+import com.bi.agent.agent.AgentSessionRegistry;
 import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.vo.DbTableVo;
 import com.bi.agent.bi.vo.DataProfile;
+import com.bi.agent.bi.vo.QueryResultVo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
+import org.mockito.InjectMocks;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -27,6 +32,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -55,21 +61,32 @@ class BiAgentServiceTest {
     @Mock
     private IBiAlertRuleService alertRuleService;
     @Mock
+    private IBiDashboardService dashboardService;
+    @Mock
     private ChartSelector chartSelector;
     @Mock
     private DataProbeService dataProbeService;
     @Mock
     private SandboxQueryService sandboxQueryService;
     @Mock
+    private SandboxImportService sandboxImportService;
+    @Mock
+    private AgentSessionRegistry sessionRegistry;
+    @Mock
     private SseEmitter emitter;
+    @Mock
+    private Executor agentExecutor;
 
+    @InjectMocks
     private BiAgentService service;
 
     @BeforeEach
     void setup() {
-        Executor direct = Runnable::run; // 同步执行，便于测试断言
-        service = new BiAgentService(llmService, memory, direct,
-                datasourceService, queryService, sandboxQueryService, knowledgeService, alertRuleService, chartSelector, dataProbeService);
+        // 把异步执行器替换成「同步直跑」，便于断言；参数列表变化不再影响本测试
+        doAnswer(inv -> {
+            ((Runnable) inv.getArgument(0)).run();
+            return null;
+        }).when(agentExecutor).execute(any());
         when(memory.get(anyString(), anyString())).thenReturn(List.of());
     }
 
@@ -103,7 +120,7 @@ class BiAgentServiceTest {
         when(datasourceService.listTables(1L)).thenReturn(List.of(t1, t2));
 
         // 同步执行（direct executor）
-        service.run("库里有哪些业务表？", "sess-1", "unit-test", null, emitter);
+        service.run("库里有哪些业务表？", "sess-1", "unit-test", null, emitter, false, false);
 
         // 1. 工具被真正调用
         verify(datasourceService).listTables(1L);
@@ -123,7 +140,7 @@ class BiAgentServiceTest {
                 + "}}]}";
         when(llmService.chatRaw(anyList(), anyString())).thenReturn(direct);
 
-        service.run("你是谁？", "sess-2", "unit-test", null, emitter);
+        service.run("你是谁？", "sess-2", "unit-test", null, emitter, false, false);
 
         verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
         verify(memory).add(eq("unit-test"), eq("sess-2"), any(), any());
@@ -150,7 +167,7 @@ class BiAgentServiceTest {
 
         when(datasourceService.listTables(1L)).thenReturn(List.of(new DbTableVo()));
 
-        service.run("复杂问题", "sess-3", "unit-test", null, emitter);
+        service.run("复杂问题", "sess-3", "unit-test", null, emitter, false, false);
 
         // 工具最多被调 8 次（步数上限），不会无限循环
         verify(datasourceService, org.mockito.Mockito.atMost(8)).listTables(1L);
@@ -191,10 +208,63 @@ class BiAgentServiceTest {
                 + "}}]}";
         org.mockito.Mockito.when(llmService.chatRaw(anyList(), anyString())).thenReturn(direct);
 
-        service.run("上季度各区域销售额趋势", "sess-4", "unit-test", 10L, emitter);
+        service.run("上季度各区域销售额趋势", "sess-4", "unit-test", 10L, emitter, false, false);
 
         // 关键断言：锁定数据源时确实调用了探查（根治编年份的根因修复已接线）
         verify(dataProbeService).probe(org.mockito.ArgumentMatchers.eq(ds), anyList(), org.mockito.ArgumentMatchers.eq("postgresql"));
+        verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
+    }
+
+    /**
+     * 【图表意图兜底回归】用户明确要求出图，但模型首轮偷懒直接文字回答（未调 select_chart），
+     * 应触发一次系统提醒重试，最终必须调用 select_chart 并产出图表。
+     */
+    @Test
+    void whenModelSkipsChart_onChartIntent_triggersRetryAndSelectChart() throws java.io.IOException {
+        // 第一轮：模型偷懒，直接文字回答（无 tool_calls）
+        String lazyText = "{"
+                + "\"choices\":[{\"message\":{"
+                + "\"role\":\"assistant\","
+                + "\"content\":\"产品销售额柱状图显示 USB-C 扩展坞最高。\""
+                + "}}]}";
+        // 第二轮：经兜底提醒后，模型调用 select_chart
+        String chartToolCall = "{"
+                + "\"choices\":[{\"message\":{"
+                + "\"role\":\"assistant\",\"content\":\"我先查数据并出图。\","
+                + "\"tool_calls\":[{\"id\":\"call_chart\",\"type\":\"function\","
+                + "\"function\":{\"name\":\"select_chart\","
+                + "\"arguments\":\"{\\\"sql\\\":\\\"SELECT product_name, sum(amount) as total FROM sales GROUP BY product_name ORDER BY total DESC LIMIT 10\\\"}\"}}]"
+                + "}}]}";
+        // 第三轮：给出带 {{chart:0}} 的最终答案
+        String finalWithPlaceholder = "{"
+                + "\"choices\":[{\"message\":{"
+                + "\"role\":\"assistant\","
+                + "\"content\":\"销售额柱状图：按产品排名。{{chart:0}}\""
+                + "}}]}";
+
+        when(llmService.chatRaw(anyList(), anyString())).thenReturn(lazyText, chartToolCall, finalWithPlaceholder);
+
+        QueryResultVo vo = new QueryResultVo();
+        vo.setColumns(List.of("product_name", "total"));
+        com.alibaba.fastjson2.JSONObject row = new com.alibaba.fastjson2.JSONObject();
+        row.put("product_name", "USB-C扩展坞");
+        row.put("total", 3200);
+        vo.setData(List.of(row));
+        vo.setRowCount(1);
+        when(queryService.runReadOnlySql(any(), anyString())).thenReturn(vo);
+        when(chartSelector.selectChart(anyList(), anyList(), anyString(), ArgumentMatchers.isNull()))
+                .thenReturn(ChartSelector.ChartType.BAR);
+        com.alibaba.fastjson2.JSONObject option = new com.alibaba.fastjson2.JSONObject();
+        option.put("xAxis", "product_name");
+        option.put("series", List.of());
+        when(chartSelector.generateEChartsOption(eq(ChartSelector.ChartType.BAR), anyList(), anyList()))
+                .thenReturn(option);
+
+        service.run("生成销售额柱状图", "sess-chart", "unit-test", null, emitter, false, false);
+
+        // 关键断言：select_chart 最终被调用，且图表被收集
+        verify(queryService).runReadOnlySql(any(), anyString());
+        verify(chartSelector).selectChart(anyList(), anyList(), anyString(), ArgumentMatchers.isNull());
         verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
     }
 }

@@ -85,7 +85,7 @@
         <el-select
           v-if="viewMode === 'edit'"
           v-model="datasourceId"
-          placeholder="选择数据源"
+          placeholder="选择沙箱库"
           class="ds-select"
           :disabled="loading"
           @change="refreshAll"
@@ -410,7 +410,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { GridLayout, GridItem } from 'grid-layout-plus'
-import { listDatasources, listTables, listColumns } from '@/api/datasource'
+import { listSandboxDbs, listSandboxTables, getSandboxColumns } from '@/api/sandbox'
 import {
   listDashboards, getDashboard, createDashboard, updateDashboard,
   deleteDashboards, copyDashboard, runDashboardQuery, shareDashboard, shareQuery
@@ -763,7 +763,11 @@ const previewSql = computed(() => {
     items.push(agg + '(' + m.column + ')' + alias)
   })
   if (!items.length) return ''
-  let sql = 'SELECT ' + items.join(', ') + ' FROM ' + c.tableName
+  // 沙箱模式（datasourceId 为 0/负数）下必须带 sandbox."表名" 全限定前缀，与后端执行口径一致
+  const fromTable = (datasourceId.value != null && datasourceId.value <= 0)
+    ? 'sandbox."' + c.tableName + '"'
+    : c.tableName
+  let sql = 'SELECT ' + items.join(', ') + ' FROM ' + fromTable
   if (c.dimensions && c.dimensions.length) sql += ' GROUP BY ' + c.dimensions.join(', ')
   if (c.orderBy) sql += ' ORDER BY ' + c.orderBy + ' ' + (c.orderDir || 'DESC')
   if (c.limit) sql += ' LIMIT ' + c.limit
@@ -798,10 +802,10 @@ function openEditChart(i) {
 }
 
 async function loadTableOptions() {
-  if (!datasourceId.value) { ElMessage.warning('请先选择数据源'); return }
+  if (!datasourceId.value) { ElMessage.warning('请先选择沙箱库'); return }
   loadingTables.value = true
   try {
-    tableOptions.value = await listTables(datasourceId.value)
+    tableOptions.value = await listSandboxTables(-datasourceId.value)
   } catch (e) {
     tableOptions.value = []
   } finally {
@@ -813,7 +817,7 @@ async function loadColumnOptions(tableName) {
   if (!datasourceId.value || !tableName) { columnOptions.value = []; return }
   loadingCols.value = true
   try {
-    columnOptions.value = await listColumns(datasourceId.value, tableName)
+    columnOptions.value = await getSandboxColumns(tableName)
   } catch (e) {
     columnOptions.value = []
   } finally {
@@ -839,7 +843,7 @@ function onMetricColumnChange(m) {
 }
 
 async function testWidget() {
-  if (!datasourceId.value) { ElMessage.warning('请先选择数据源'); return }
+  if (!datasourceId.value) { ElMessage.warning('请先选择沙箱库'); return }
   const w = { chartType: form.value.chartType, mode: form.value.mode, config: form.value.config, sql: form.value.sql ? form.value.sql.trim() : '' }
   if (form.value.mode === 'sql' && !w.sql) { ElMessage.warning('请填写 SQL'); return }
   if (form.value.mode === 'config') {
@@ -1071,15 +1075,28 @@ onMounted(async () => {
     viewMode.value = 'preview'
     await loadShare(route.query.token)
   } else {
-    fetchList()
+    await fetchList()
     try {
-      const list = await listDatasources()
-      datasources.value = Array.isArray(list) ? list : []
+      const list = await listSandboxDbs()
+      const dbs = Array.isArray(list) ? list : []
+      // 下拉值用 -dbId（负数），与后端「负数=锁定沙箱库」约定一致
+      datasources.value = dbs.map((db) => ({ id: -db.id, name: db.name }))
       if (datasources.value.length && !datasourceId.value) {
         datasourceId.value = datasources.value[0].id
       }
     } catch (e) {
       datasources.value = []
+    }
+    // 支持「深链接」：/dashboard?id=3&mode=preview 直接打开指定大屏并进入预览/编辑模式
+    // （智能体 create_dashboard 工具返回的跳转地址即此格式）
+    if (route.query.id) {
+      const targetId = Number(route.query.id)
+      const targetMode = route.query.mode === 'edit' ? 'edit' : 'preview'
+      try {
+        await openDesigner({ id: targetId }, targetMode)
+      } catch (e) {
+        ElMessage.warning('未能打开指定大屏（id=' + targetId + '），可能已被删除或无权限')
+      }
     }
   }
 })

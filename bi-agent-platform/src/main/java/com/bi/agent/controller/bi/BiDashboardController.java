@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.bi.agent.bi.domain.BiDashboard;
 import com.bi.agent.bi.service.BiQueryService;
+import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.IBiDashboardService;
 import com.bi.agent.bi.service.sql.ChartSelector;
 import com.bi.agent.bi.vo.QueryResultVo;
@@ -56,6 +57,9 @@ public class BiDashboardController {
 
     @Autowired
     private IBiDashboardService dashboardService;
+
+    @Autowired
+    private SandboxQueryService sandboxQueryService;
 
     // ==================== 大屏 CRUD ====================
 
@@ -162,7 +166,11 @@ public class BiDashboardController {
         }
 
         log.info("大屏查询：dsId={}, chartType={}", req.getDatasourceId(), req.getChartType());
-        QueryResultVo vo = biQueryService.runReadOnlySql(req.getDatasourceId(), req.getSql().trim());
+        // datasourceId 为 0/负数 → 沙箱模式，走沙箱只读 SQL（已含边界校验）
+        boolean sandbox = req.getDatasourceId() != null && req.getDatasourceId() <= 0;
+        QueryResultVo vo = sandbox
+                ? sandboxQueryService.runSandboxReadOnlySql(req.getSql().trim())
+                : biQueryService.runReadOnlySql(req.getDatasourceId(), req.getSql().trim());
         return Result.ok(resolveChart(vo, req.getChartType()));
     }
 
@@ -188,16 +196,20 @@ public class BiDashboardController {
             return Result.fail(400, "至少配置一个数值指标（metrics）");
         }
 
+        // datasourceId 为 0/负数 → 沙箱模式
+        boolean sandbox = req.getDatasourceId() != null && req.getDatasourceId() <= 0;
         String sql;
         try {
-            sql = buildSelectSql(req);
+            sql = buildSelectSql(req, sandbox);
         } catch (BizException e) {
             return Result.fail(400, e.getMessage());
         }
-        log.info("大屏配置查询：dsId={}, table={}, sql={}", req.getDatasourceId(), req.getTableName(), sql);
+        log.info("大屏配置查询：dsId={}, sandbox={}, table={}, sql={}", req.getDatasourceId(), sandbox, req.getTableName(), sql);
 
         // 复用只读执行链路：表名白名单 + 五层防护 + 取数 + 选图
-        QueryResultVo vo = biQueryService.runReadOnlySql(req.getDatasourceId(), sql);
+        QueryResultVo vo = sandbox
+                ? sandboxQueryService.runSandboxReadOnlySql(sql)
+                : biQueryService.runReadOnlySql(req.getDatasourceId(), sql);
         return Result.ok(resolveChart(vo, req.getChartType()));
     }
 
@@ -277,21 +289,25 @@ public class BiDashboardController {
         if (dsId == null) {
             return Result.fail(400, "大屏未配置数据源");
         }
+        // datasourceId 为 0/负数 → 沙箱模式（与编辑态保存的约定一致）
+        boolean sandbox = dsId <= 0;
 
         QueryResultVo vo;
         String mode = w.getString("mode");
         if (!"sql".equals(mode) && w.getJSONObject("config") != null
                 && w.getJSONObject("config").getString("tableName") != null) {
-            DashboardConfigReq req = buildConfigFromWidget(w, dsId);
+            DashboardConfigReq req = buildConfigFromWidget(w, dsId, sandbox);
             String sql;
             try {
-                sql = buildSelectSql(req);
+                sql = buildSelectSql(req, sandbox);
             } catch (BizException e) {
                 return Result.fail(400, e.getMessage());
             }
-            vo = biQueryService.runReadOnlySql(dsId, sql);
+            vo = sandbox ? sandboxQueryService.runSandboxReadOnlySql(sql)
+                         : biQueryService.runReadOnlySql(dsId, sql);
         } else if (w.getString("sql") != null && !w.getString("sql").trim().isEmpty()) {
-            vo = biQueryService.runReadOnlySql(dsId, w.getString("sql").trim());
+            vo = sandbox ? sandboxQueryService.runSandboxReadOnlySql(w.getString("sql").trim())
+                         : biQueryService.runReadOnlySql(dsId, w.getString("sql").trim());
         } else {
             return Result.fail(400, "该组件未配置数据");
         }
@@ -299,7 +315,7 @@ public class BiDashboardController {
     }
 
     /** 从已保存的 widget JSON 还原出 DashboardConfigReq（供分享页安全取数，SQL 由后端按白名单重拼） */
-    private DashboardConfigReq buildConfigFromWidget(JSONObject w, Long dsId) {
+    private DashboardConfigReq buildConfigFromWidget(JSONObject w, Long dsId, boolean sandbox) {
         JSONObject c = w.getJSONObject("config");
         DashboardConfigReq req = new DashboardConfigReq();
         req.setDatasourceId(dsId);
@@ -330,7 +346,7 @@ public class BiDashboardController {
      * 按前端可视化配置拼出 SELECT 语句。表名、字段名均做标识符白名单校验，
      * 聚合函数仅允许枚举值，避免任何拼接注入。
      */
-    private String buildSelectSql(DashboardConfigReq req) {
+    private String buildSelectSql(DashboardConfigReq req, boolean sandbox) {
         String table = req.getTableName().trim();
         if (!IDENTIFIER_PATTERN.matcher(table).matches()) {
             throw new BizException("非法的表名：" + table);
@@ -375,7 +391,8 @@ public class BiDashboardController {
 
         StringBuilder sb = new StringBuilder("SELECT ");
         sb.append(String.join(", ", selectItems));
-        sb.append(" FROM ").append(table);
+        // 沙箱模式：表名必须带 sandbox."表名" 全限定前缀，否则越界校验不通过
+        sb.append(" FROM ").append(sandbox ? ("sandbox.\"" + table + "\"") : table);
 
         // GROUP BY：有维度才分组
         if (req.getDimensions() != null && req.getDimensions().stream().anyMatch(d -> d != null && !d.trim().isEmpty())) {

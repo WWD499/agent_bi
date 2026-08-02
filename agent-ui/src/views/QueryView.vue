@@ -15,7 +15,7 @@
         <div class="tb-row">
           <el-select
             v-model="datasourceId"
-            placeholder="选择数据源"
+            placeholder="选择沙箱库"
             class="w200"
             :disabled="loading"
             filterable
@@ -23,7 +23,7 @@
             <el-option
               v-for="ds in datasources"
               :key="ds.id"
-              :label="`${ds.name}（${ds.type} / ${ds.databaseName}）`"
+              :label="ds.name"
               :value="ds.id"
             />
           </el-select>
@@ -132,7 +132,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { Promotion } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { nl2sql } from '@/api/query'
-import { listDatasources, listTables } from '@/api/datasource'
+import { listSandboxDbs, listSandboxTables } from '@/api/sandbox'
 import ChartBlock from '@/components/ChartBlock.vue'
 
 const query = ref('')
@@ -145,17 +145,17 @@ const loading = ref(false)
 const error = ref('')
 const result = ref(null)
 
-// 按数据源加载表列表，填充「目标表名」下拉（排除 bi_ 系统表，与 Agent 的 list_tables 口径一致）
+// 按沙箱库加载表列表，填充「目标表名」下拉（下拉值为 -dbId，需转回正数 dbId）
 async function loadTables(dsId) {
   if (dsId == null) {
     tables.value = []
     return
   }
+  const dbId = -dsId
   tableLoading.value = true
   try {
-    const list = await listTables(dsId)
-    tables.value = (Array.isArray(list) ? list : [])
-      .filter((t) => !t.tableName || !t.tableName.toLowerCase().startsWith('bi_'))
+    const list = await listSandboxTables(dbId)
+    tables.value = Array.isArray(list) ? list : []
   } catch {
     // 表列表加载失败不阻塞页面，仅留空让用户手填
     tables.value = []
@@ -164,11 +164,12 @@ async function loadTables(dsId) {
   }
 }
 
-// 进入页面即拉取数据源列表，并默认选中第一个，避免用户漏填导致后端 400
+// 进入页面即拉取沙箱库列表，并默认选中第一个（下拉值用 -dbId，与后端「负数=锁定沙箱库」约定一致）
 onMounted(async () => {
   try {
-    const list = await listDatasources()
-    datasources.value = Array.isArray(list) ? list : []
+    const list = await listSandboxDbs()
+    const dbs = Array.isArray(list) ? list : []
+    datasources.value = dbs.map((db) => ({ id: -db.id, name: db.name }))
     if (datasources.value.length > 0) {
       datasourceId.value = datasources.value[0].id
       await loadTables(datasourceId.value)
@@ -232,7 +233,7 @@ function reset() {
   tableName.value = ''
   result.value = null
   error.value = ''
-  // 恢复默认选中的第一个数据源
+  // 恢复默认选中的第一个沙箱库
   datasourceId.value = datasources.value.length > 0 ? datasources.value[0].id : null
 }
 </script>

@@ -28,4 +28,17 @@ public interface AgentTool {
      * @return 结果 JSON 字符串（供模型回填上下文）
      */
     String call(String argsJson);
+
+    /**
+     * 是否需要「用户确认」后才执行（M2 写工具用）。
+     *
+     * <p>返回 true 的工具属于「危险操作」（如建表/落表/删表）：Agent 在真正调用
+     * {@link #call(String)} 之前会先经 SSE 推一个 confirm 事件给前端，阻塞等待用户
+     * 在对话框里「同意 / 拒绝」；用户拒绝则工具不执行、直接把拒绝结果回填上下文。
+     *
+     * <p>默认 false：历史只读工具无需确认，照旧直接执行。
+     */
+    default boolean requiresConfirmation() {
+        return false;
+    }
 }

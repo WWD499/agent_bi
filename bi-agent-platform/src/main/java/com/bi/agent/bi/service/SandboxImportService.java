@@ -1,5 +1,6 @@
 package com.bi.agent.bi.service;
 
+import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.bi.agent.bi.domain.BiDatasource;
@@ -9,6 +10,8 @@ import com.bi.agent.bi.mapper.BiSandboxMapper;
 import com.bi.agent.bi.service.IBiDatasourceService;
 import com.bi.agent.bi.util.BiDataSourceFactory;
 import com.bi.agent.bi.util.JdbcUrlBuilder;
+import com.bi.agent.bi.service.SandboxAuditService;
+import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.common.BizException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,12 +34,12 @@ import java.util.*;
  * 按列采样做类型推断、在 {@code sandbox} schema 下动态建表、批量写入，并登记元数据到
  * {@code bi_sandbox_table}。
  *
- * <p>逻辑命名空间（沙箱库）：表落在某一沙箱库（bi_sandbox_db）下，物理表名 =
- * {@code db_key || "__" || table_name}（如 {@code sandbox."marts__sales"}），全部仍位于 sandbox schema，
- * 因此既保留「统一 schema 前缀」安全边界，又实现「按库选择分析」体验。
+ * <p>逻辑命名空间（沙箱库）：表落在某一沙箱库（bi_sandbox_db）下，物理表名直接等于短名
+ * （如 {@code sandbox."sales"}），全沙箱短名全局唯一，全部位于 sandbox schema，
+ * 既保留「统一 schema 前缀」安全边界，又避免模型拼接 {@code dbkey__表名} 而丢失下划线导致找不到表。
  *
  * <p>安全：表名与列名强制为合法标识符（{@code [A-Za-z_][A-Za-z0-9_]}），并以双引号包裹，
- * 杜绝 DDL 注入；建表前校验（库内）表名不冲突。
+ * 杜绝 DDL 注入；建表前校验（全沙箱）表名不冲突。
  */
 @Service
 public class SandboxImportService {
@@ -44,9 +47,6 @@ public class SandboxImportService {
     private static final Logger log = LoggerFactory.getLogger(SandboxImportService.class);
 
     public static final String SANDBOX_SCHEMA = "sandbox";
-
-    /** 物理名前缀分隔符：db_key 与 table_name 之间 */
-    public static final String PHYSICAL_SEP = "__";
 
     /** 默认库 db_key（存量兼容迁移种子） */
     public static final String DEFAULT_DB_KEY = "default";
@@ -76,6 +76,12 @@ public class SandboxImportService {
     @Autowired
     private BiDataSourceFactory dataSourceFactory;
 
+    @Autowired
+    private SandboxQueryService sandboxQueryService;
+
+    @Autowired
+    private SandboxAuditService auditService;
+
     /**
      * 解析粘贴文本并导入沙箱（可指定目标沙箱库）。
      *
@@ -94,8 +100,9 @@ public class SandboxImportService {
         }
         BiSandboxDb db = resolveDb(dbId);
         String shortName = sanitizeIdentifier(tableName);
-        if (sandboxMapper.countByDbAndTable(db.getId(), shortName) > 0) {
-            throw new BizException("沙箱库[" + db.getName() + "]已存在表 " + shortName + "，请先删除或换名后再导入");
+        // 物理名 == 短名，全沙箱短名全局唯一：任一库已存在同名表则拒绝
+        if (sandboxMapper.countByTableName(shortName) > 0) {
+            throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请先删除或换名后再导入");
         }
 
         // 1. 按行解析（跳过空行）
@@ -152,7 +159,11 @@ public class SandboxImportService {
 
         // 4. 组装数据行（去掉表头行）并共用 writeSandboxTable 建表写入
         List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
-        return writeSandboxTable(db.getId(), db.getDbKey(), shortName, colNames, colTypes, dataRows, "paste", null);
+        JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "paste", null);
+        auditService.logSuccess(SandboxAuditService.OP_IMPORT_TEXT, res.getString("tableName"), "ui",
+                Map.of("db", db.getName(), "rowCount", res.getInteger("rowCount"),
+                        "columns", res.getJSONArray("columns")));
+        return res;
     }
 
     /**
@@ -179,11 +190,11 @@ public class SandboxImportService {
         JdbcTemplate bizJt = new JdbcTemplate(hds);
         boolean isPg = JdbcUrlBuilder.isPostgres(ds);
 
-        // 1) 预校验：目标沙箱表名冲突（任一处冲突则整体拒绝，避免半导入）
+        // 1) 预校验：目标沙箱表名冲突（任一处冲突则整体拒绝，避免半导入；短名全沙箱唯一）
         List<String> conflicts = new ArrayList<>();
         for (String src : sourceTables) {
             String target = sanitizeIdentifier(src);
-            if (sandboxMapper.countByDbAndTable(db.getId(), target) > 0) {
+            if (sandboxMapper.countByTableName(target) > 0) {
                 conflicts.add(target);
             }
         }
@@ -244,8 +255,10 @@ public class SandboxImportService {
 
             String remark = ds.getName() + "." + src
                     + (allRows.size() >= MAX_IMPORT_ROWS ? " (截断至" + MAX_IMPORT_ROWS + "行)" : "");
-            JSONObject res = writeSandboxTable(db.getId(), db.getDbKey(), target, colNames, colTypes, allRows, "datasource", remark);
+            JSONObject res = writeSandboxTable(db.getId(), target, colNames, colTypes, allRows, "datasource", remark);
             results.add(res);
+            auditService.logSuccess(SandboxAuditService.OP_IMPORT_DATASOURCE, res.getString("tableName"), "ui",
+                    Map.of("source", ds.getName() + "." + src, "db", db.getName(), "rowCount", allRows.size()));
             log.info("数据源表导入沙箱：{} -> sandbox.\"{}\" ({}行)", src, res.getString("tableName"), allRows.size());
         }
         return results;
@@ -253,10 +266,10 @@ public class SandboxImportService {
 
     /**
      * 建表 + 批量写入 + 登记元数据的共用实现（粘贴导入与数据源导入都走这里）。
+     * 物理表名直接等于短名（不再拼接库前缀），全沙箱短名全局唯一。
      *
      * @param dbId      所属沙箱库 id
-     * @param dbKey     沙箱库前缀键（用于拼物理名）
-     * @param shortName 沙箱表短名（已为合法标识符、已去重）
+     * @param shortName 沙箱表短名（已为合法标识符、已全局去重）
      * @param colNames  列名数组（已规范化、已去重）
      * @param colTypes  列类型数组（BIGINT / NUMERIC(18,2) / DATE / TEXT）
      * @param dataRows  数据行（不含表头）
@@ -264,9 +277,9 @@ public class SandboxImportService {
      * @param remark    来源备注（如 数据源名.源表名）
      * @return 导入摘要 JSONObject
      */
-    private JSONObject writeSandboxTable(Long dbId, String dbKey, String shortName, String[] colNames, String[] colTypes,
+    private JSONObject writeSandboxTable(Long dbId, String shortName, String[] colNames, String[] colTypes,
                                         List<String[]> dataRows, String sourceType, String remark) {
-        String physicalName = dbKey + PHYSICAL_SEP + shortName;
+        String physicalName = shortName; // 物理名即短名，不再拼接库前缀
         // 1. 动态建表
         StringBuilder ddl = new StringBuilder("CREATE TABLE ")
                 .append(SANDBOX_SCHEMA).append(".\"").append(physicalName).append("\" (");
@@ -326,17 +339,329 @@ public class SandboxImportService {
     }
 
     /**
-     * 删除沙箱表（用户在前端「数据沙箱」页主动点击，属明确意图操作，不受 Agent 写工具 M1 约束限制）。
+     * 从上传的文件（Excel .xlsx/.xls 或 CSV .csv）导入沙箱（M3）。
+     *
+     * <p>解析出表头 + 数据行后，复用 {@link #writeSandboxTable} 做类型推断、建表与批量写入，并登记审计。
+     * 为避免大文件撑爆沙箱库，数据行上限 {@link #MAX_IMPORT_ROWS}（超出截断）。
+     *
+     * @param file      上传文件（MultipartFile）
+     * @param tableName 目标沙箱表短名（必填，合法标识符或自动规范化）
+     * @param dbId      目标沙箱库 id；为 null 时落入默认库
+     * @return 导入摘要 JSONObject
+     */
+    public JSONObject importFromFile(org.springframework.web.multipart.MultipartFile file, String tableName, Long dbId) {
+        if (file == null || file.isEmpty()) {
+            throw new BizException("上传文件为空");
+        }
+        String original = file.getOriginalFilename() == null ? "" : file.getOriginalFilename().toLowerCase();
+        boolean isCsv = original.endsWith(".csv");
+        boolean isExcel = original.endsWith(".xlsx") || original.endsWith(".xls");
+        if (!isCsv && !isExcel) {
+            throw new BizException("仅支持 .csv / .xlsx / .xls 文件");
+        }
+        try {
+            List<String[]> rows;
+            if (isCsv) {
+                rows = parseCsv(file);
+            } else {
+                rows = parseExcel(file);
+            }
+            if (rows.size() < 2) {
+                throw new BizException("文件至少需要表头行 + 一行数据");
+            }
+            // 规范化表名 + 冲突检查（与 importFromText 同路径）
+            BiSandboxDb db = resolveDb(dbId);
+            String shortName = sanitizeIdentifier(tableName);
+            // 物理名 == 短名，全沙箱短名全局唯一
+            if (sandboxMapper.countByTableName(shortName) > 0) {
+                throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请先删除或换名后再导入");
+            }
+            String[] headers = rows.get(0);
+            int colCount = headers.length;
+            String[] colNames = new String[colCount];
+            Set<String> seen = new HashSet<>();
+            for (int i = 0; i < colCount; i++) {
+                String h = (headers[i] == null) ? "" : headers[i].trim();
+                if (h.isEmpty()) {
+                    h = "col" + (i + 1);
+                }
+                if (!IDENT_PATTERN.matcher(h).matches()) {
+                    throw new BizException("列名非法（仅英文/数字/下划线，首字符非数字）：" + headers[i]);
+                }
+                String lc = h.toLowerCase();
+                if (!seen.add(lc)) {
+                    throw new BizException("存在重复列名：" + lc);
+                }
+                colNames[i] = lc;
+            }
+            String[] colTypes = new String[colCount];
+            for (int c = 0; c < colCount; c++) {
+                List<String> samples = new ArrayList<>();
+                for (int r = 1; r < rows.size(); r++) {
+                    String[] row = rows.get(r);
+                    if (row.length <= c) {
+                        continue;
+                    }
+                    String v = row[c];
+                    if (v != null && !v.trim().isEmpty()) {
+                        samples.add(v.trim());
+                    }
+                }
+                colTypes[c] = inferType(samples);
+            }
+            List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
+            JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "upload", original);
+            auditService.logSuccess(SandboxAuditService.OP_IMPORT_FILE, res.getString("tableName"), "ui",
+                    Map.of("file", file.getOriginalFilename(), "db", db.getName(), "rowCount", res.getInteger("rowCount"),
+                            "columns", res.getJSONArray("columns")));
+            return res;
+        } catch (BizException e) {
+            auditService.logFailure(SandboxAuditService.OP_IMPORT_FILE, tableName == null ? "" : tableName, "ui", e.getMessage());
+            throw e;
+        } catch (Exception e) {
+            auditService.logFailure(SandboxAuditService.OP_IMPORT_FILE, tableName == null ? "" : tableName, "ui", e.getMessage());
+            throw new BizException("文件导入失败：" + e.getMessage());
+        }
+    }
+
+    /** 解析 CSV 为「首行表头 + 数据行」的二维数组（使用 commons-csv 正确处理引号与转义） */
+    private List<String[]> parseCsv(org.springframework.web.multipart.MultipartFile file) throws Exception {
+        List<String[]> rows = new ArrayList<>();
+        try (java.io.InputStream in = file.getInputStream();
+             org.apache.commons.csv.CSVParser parser = new org.apache.commons.csv.CSVParser(
+                     new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8),
+                     org.apache.commons.csv.CSVFormat.DEFAULT)) {
+            for (org.apache.commons.csv.CSVRecord rec : parser) {
+                if (rows.size() > MAX_IMPORT_ROWS) {
+                    break; // 数据安全：仅保留上限行
+                }
+                String[] arr = new String[rec.size()];
+                for (int i = 0; i < rec.size(); i++) {
+                    arr[i] = rec.get(i);
+                }
+                rows.add(arr);
+            }
+        }
+        return rows;
+    }
+
+    /** 解析 Excel（.xlsx/.xls）为二维数组（Apache POI，首行为表头） */
+    private List<String[]> parseExcel(org.springframework.web.multipart.MultipartFile file) throws Exception {
+        List<String[]> rows = new ArrayList<>();
+        try (java.io.InputStream in = file.getInputStream();
+             org.apache.poi.ss.usermodel.Workbook wb = org.apache.poi.ss.usermodel.WorkbookFactory.create(in)) {
+            org.apache.poi.ss.usermodel.Sheet sheet = wb.getSheetAt(0);
+            int taken = 0;
+            for (org.apache.poi.ss.usermodel.Row row : sheet) {
+                if (taken > MAX_IMPORT_ROWS) {
+                    break;
+                }
+                int n = row.getLastCellNum();
+                if (n < 0) {
+                    n = 0;
+                }
+                String[] arr = new String[n];
+                for (int i = 0; i < n; i++) {
+                    org.apache.poi.ss.usermodel.Cell cell = row.getCell(i, org.apache.poi.ss.usermodel.Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                    arr[i] = readCellToString(cell);
+                }
+                rows.add(arr);
+                taken++;
+            }
+        }
+        return rows;
+    }
+
+    /** 把 POI 单元格读成字符串（数值/布尔/公式统一转文本，避免类型推断失真） */
+    private String readCellToString(org.apache.poi.ss.usermodel.Cell cell) {
+        if (cell == null) {
+            return "";
+        }
+        switch (cell.getCellType()) {
+            case STRING:
+                return cell.getStringCellValue();
+            case NUMERIC:
+                if (org.apache.poi.ss.usermodel.DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getLocalDateTimeCellValue().toLocalDate().toString();
+                }
+                double d = cell.getNumericCellValue();
+                // 整数形态去 .0，便于后续类型推断判 INTEGER
+                if (d == Math.rint(d) && !Double.isInfinite(d)) {
+                    return String.valueOf((long) d);
+                }
+                return String.valueOf(d);
+            case BOOLEAN:
+                return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA:
+                try {
+                    return String.valueOf(cell.getNumericCellValue());
+                } catch (Exception e) {
+                    return cell.getStringCellValue();
+                }
+            default:
+                return "";
+        }
+    }
+
+    /**
+     * 向已有沙箱表导入/追加数据行（Agent 用）。
+     *
+     * <p>按 dbId + tableName（短名）定位目标表，从元数据 columns_json 读取列结构，校验传入数据后批量插入。
+     * 支持两种模式：append（追加，默认）与 replace（先清空再插入）。
+     *
+     * @param tableName 目标沙箱表短名（来自 list_tables 的返回）
+     * @param rows      数据行，每项为 {列名: 值} 的 Map；列名大小写不敏感，缺失列补 null
+     * @param dbId      目标沙箱库 id（可选，用于缩小定位范围）
+     * @param mode      append 或 replace；默认 append
+     * @param operator  操作人（审计）
+     * @return 导入摘要 JSONObject：{tableName, rowCount(导入后总行数), inserted(本次插入行数), mode}
+     */
+    public JSONObject importDataIntoTable(String tableName, List<Map<String, Object>> rows, Long dbId, String mode, String operator) {
+        if (tableName == null || tableName.trim().isEmpty()) {
+            throw new BizException("表名不能为空");
+        }
+        if (rows == null || rows.isEmpty()) {
+            throw new BizException("数据行不能为空");
+        }
+        if (rows.size() > MAX_IMPORT_ROWS) {
+            throw new BizException("单次导入超过上限 " + MAX_IMPORT_ROWS + " 行，请分批");
+        }
+
+        // 1. 定位物理表与元数据
+        String physicalName = sandboxQueryService.resolvePhysicalName(dbId, tableName, null);
+        if (physicalName == null) {
+            throw new BizException("未找到对应的沙箱表：dbId=" + dbId + ", tableName=" + tableName);
+        }
+        BiSandboxTable meta = sandboxMapper.selectByPhysicalName(physicalName);
+        if (meta == null) {
+            throw new BizException("沙箱表元数据不存在：" + physicalName);
+        }
+
+        // 2. 解析列结构
+        String[] colNames;
+        String[] colTypes;
+        try {
+            JSONArray cols = JSON.parseArray(meta.getColumnsJson());
+            if (cols == null || cols.isEmpty()) {
+                throw new BizException("目标表无元数据列定义，无法导入");
+            }
+            colNames = new String[cols.size()];
+            colTypes = new String[cols.size()];
+            for (int i = 0; i < cols.size(); i++) {
+                JSONObject c = cols.getJSONObject(i);
+                colNames[i] = c.getString("name").toLowerCase();
+                colTypes[i] = c.getString("type");
+            }
+        } catch (Exception e) {
+            throw new BizException("解析目标表列定义失败：" + e.getMessage());
+        }
+
+        // 3. replace 模式先清空
+        boolean isReplace = "replace".equalsIgnoreCase(mode);
+        if (isReplace) {
+            jdbcTemplate.execute("TRUNCATE TABLE " + SANDBOX_SCHEMA + ".\"" + physicalName + "\"");
+        }
+
+        // 4. 批量插入
+        String insertSql = buildInsertSql(physicalName, colNames);
+        List<Object[]> batch = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Object[] params = new Object[colNames.length];
+            for (int c = 0; c < colNames.length; c++) {
+                Object v = row == null ? null : findValueIgnoreCase(row, colNames[c]);
+                params[c] = convertValue(v, colTypes[c]);
+            }
+            batch.add(params);
+        }
+        jdbcTemplate.batchUpdate(insertSql, batch);
+
+        // 5. 更新元数据 row_count
+        int inserted = batch.size();
+        int finalRowCount = isReplace ? inserted
+                : (meta.getRowCount() == null ? 0 : meta.getRowCount()) + inserted;
+        sandboxMapper.updateRowCountByPhysical(physicalName, finalRowCount);
+
+        // 6. 审计
+        auditService.logSuccess(SandboxAuditService.OP_IMPORT_DATA, physicalName, operator,
+                Map.of("db", meta.getDbId(), "mode", isReplace ? "replace" : "append",
+                        "inserted", inserted, "rowCount", finalRowCount));
+
+        JSONObject out = new JSONObject();
+        out.put("tableName", physicalName);
+        out.put("rowCount", finalRowCount);
+        out.put("inserted", inserted);
+        out.put("mode", isReplace ? "replace" : "append");
+        return out;
+    }
+
+    /** 在 Map 中按 key 忽略大小写查找值 */
+    private Object findValueIgnoreCase(Map<String, Object> map, String key) {
+        if (map == null || key == null) {
+            return null;
+        }
+        if (map.containsKey(key)) {
+            return map.get(key);
+        }
+        for (Map.Entry<String, Object> e : map.entrySet()) {
+            if (key.equalsIgnoreCase(e.getKey())) {
+                return e.getValue();
+            }
+        }
+        return null;
+    }
+
+    /** 把 JSON 解析出的值转成目标列类型（兼容 Number / Boolean / String）。 */
+    private Object convertValue(Object value, String type) {
+        if (value == null) {
+            return null;
+        }
+        if (type == null) {
+            return String.valueOf(value);
+        }
+        String t = type.trim().toUpperCase();
+        if ("BIGINT".equals(t) || "INTEGER".equals(t) || "INT".equals(t)
+                || "INT4".equals(t) || "INT8".equals(t) || "SMALLINT".equals(t)) {
+            if (value instanceof Number) {
+                return ((Number) value).longValue();
+            }
+            return Long.parseLong(String.valueOf(value).trim());
+        }
+        if (t.startsWith("NUMERIC") || t.startsWith("DECIMAL") || "DOUBLE PRECISION".equals(t)
+                || "REAL".equals(t) || "FLOAT".equals(t)) {
+            if (value instanceof Number) {
+                return new BigDecimal(value.toString());
+            }
+            return new BigDecimal(String.valueOf(value).trim());
+        }
+        if ("DATE".equals(t) || "TIMESTAMP".equals(t) || "TIME".equals(t)) {
+            String s = String.valueOf(value).trim().replace('/', '-');
+            if (s.isEmpty()) {
+                return null;
+            }
+            if ("DATE".equals(t)) {
+                return Date.valueOf(s);
+            }
+            // TIMESTAMP/TIME 暂按字符串透传，让 PG 做隐式转换
+            return s;
+        }
+        if ("BOOLEAN".equals(t) || "BOOL".equals(t)) {
+            if (value instanceof Boolean) {
+                return value;
+            }
+            String s = String.valueOf(value).trim().toLowerCase();
+            return "true".equals(s) || "1".equals(s) || "yes".equals(s) || "y".equals(s);
+        }
+        return String.valueOf(value);
+    }
+
+    /**
+     * 删除沙箱表（前端「数据沙箱」页主动点击，属明确意图操作；统一委托 SandboxQueryService 执行 DDL+元数据+审计）。
      *
      * @param physicalName 物理表名（如 marts__sales）
      */
     public void dropSandboxTable(String physicalName) {
-        if (physicalName == null || !IDENT_PATTERN.matcher(physicalName).matches()) {
-            throw new BizException("非法表名：" + physicalName);
-        }
-        jdbcTemplate.execute("DROP TABLE IF EXISTS " + SANDBOX_SCHEMA + ".\"" + physicalName + "\"");
-        sandboxMapper.deleteByPhysicalName(physicalName);
-        log.info("沙箱表已删除：{}", physicalName);
+        // 委托给沙箱写服务（单一事实来源，含审计留痕）
+        sandboxQueryService.dropSandboxTable(physicalName, "ui");
     }
 
     /**
@@ -355,18 +680,25 @@ public class SandboxImportService {
         if (DEFAULT_DB_KEY.equals(db.getDbKey())) {
             throw new BizException("默认库不可删除（可清空其中的表，但库本身保留）");
         }
-        // 1) 删物理表
-        for (BiSandboxTable rec : sandboxMapper.selectByDbId(dbId)) {
-            String physical = rec.getPhysicalName();
-            if (physical != null && IDENT_PATTERN.matcher(physical).matches()) {
-                jdbcTemplate.execute("DROP TABLE IF EXISTS " + SANDBOX_SCHEMA + ".\"" + physical + "\"");
+        try {
+            // 1) 删物理表
+            for (BiSandboxTable rec : sandboxMapper.selectByDbId(dbId)) {
+                String physical = rec.getPhysicalName();
+                if (physical != null && IDENT_PATTERN.matcher(physical).matches()) {
+                    jdbcTemplate.execute("DROP TABLE IF EXISTS " + SANDBOX_SCHEMA + ".\"" + physical + "\"");
+                }
             }
+            // 2) 删元数据
+            sandboxMapper.deleteTablesByDbId(dbId);
+            // 3) 删库行
+            sandboxMapper.deleteDbById(dbId);
+            log.info("沙箱库已删除：{}（{}）", db.getName(), db.getDbKey());
+            auditService.logSuccess(SandboxAuditService.OP_DROP_DB, db.getDbKey(), "ui",
+                    Map.of("name", db.getName()));
+        } catch (Exception e) {
+            auditService.logFailure(SandboxAuditService.OP_DROP_DB, db.getDbKey(), "ui", e.getMessage());
+            throw e instanceof BizException ? (BizException) e : new BizException("删库失败：" + e.getMessage());
         }
-        // 2) 删元数据
-        sandboxMapper.deleteTablesByDbId(dbId);
-        // 3) 删库行
-        sandboxMapper.deleteDbById(dbId);
-        log.info("沙箱库已删除：{}（{}）", db.getName(), db.getDbKey());
     }
 
     /** 解析目标沙箱库：dbId 为 null 时回落到默认库；库不存在则报错 */

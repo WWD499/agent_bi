@@ -3,7 +3,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as echarts from 'echarts'
 
 const props = defineProps({
@@ -12,6 +12,7 @@ const props = defineProps({
 
 const el = ref(null)
 let chart = null
+let ro = null
 
 function render() {
   if (!el.value) return
@@ -24,8 +25,17 @@ function resize() {
 }
 
 onMounted(() => {
-  render()
-  window.addEventListener('resize', resize)
+  // 容器可能尚未拿到最终尺寸（grid-layout 初次渲染/缩放），
+  // 用 nextTick + ResizeObserver 保证拿到真实宽高后再初始化并随容器自适应。
+  nextTick(() => {
+    render()
+    if (el.value && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => resize())
+      ro.observe(el.value)
+    } else {
+      window.addEventListener('resize', resize)
+    }
+  })
 })
 
 watch(
@@ -35,6 +45,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  if (ro && el.value) ro.unobserve(el.value)
+  ro = null
   window.removeEventListener('resize', resize)
   chart && chart.dispose()
 })

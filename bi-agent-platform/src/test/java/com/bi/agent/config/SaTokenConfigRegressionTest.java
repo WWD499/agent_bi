@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import com.bi.agent.agent.BiAgentService;
+import com.bi.agent.agent.AgentSessionRegistry;
 import com.bi.agent.controller.agent.AgentChatController;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
@@ -88,7 +89,7 @@ class SaTokenConfigRegressionTest {
         saTokenConfig.addInterceptors(registry);
         MappedInterceptor mapped = registry.exposed().get(0);
 
-        AgentChatController controller = new AgentChatController(agentService);
+        AgentChatController controller = new AgentChatController(agentService, new AgentSessionRegistry());
         mockMvc = standaloneSetup(controller)
                 // ① SaTokenContextFilterForJakartaServlet：为每个请求初始化 SaTokenContext（ThreadLocal），
                 //    否则 SaRouter.match() 会因“上下文尚未初始化”抛 SaTokenContextException。

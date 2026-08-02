@@ -512,6 +512,18 @@ public class ChartSelector {
                 option.put("series", series);
         }
 
+        // 统一加 grid 边距，containLabel 让 ECharts 自动为坐标轴标签（长名称/大数值）预留空间，
+        // 避免坐标轴数字挤在一起或轴名被截断。饼图/雷达图不使用 grid（其 series 内自带布局）。
+        if (option.containsKey("xAxis")) {
+            JSONObject grid = new JSONObject();
+            grid.fluentPut("left", "3%");
+            grid.fluentPut("right", "4%");
+            grid.fluentPut("bottom", "8%");
+            grid.fluentPut("top", "12%");
+            grid.fluentPut("containLabel", true);
+            option.put("grid", grid);
+        }
+
         return option;
     }
 }

@@ -66,3 +66,26 @@ export function dropSandboxTable(physicalName) {
 export function updateSandboxDisplayName(physicalName, displayName) {
   return http.post(`/bi/sandbox/tables/${physicalName}/display-name`, { displayName }).then((r) => r.data.data)
 }
+
+// 文件上传导入（M3）：支持 Excel(.xlsx/.xls) 与 CSV(.csv)。
+// 解析后自动推断列类型、建表写入沙箱并登记审计。
+// form-data：file=File, tableName=表短名, dbId=目标沙箱库id(可选)
+export function importSandboxFile(file, tableName, dbId) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('tableName', tableName || '')
+  if (dbId != null) form.append('dbId', dbId)
+  // 文件上传不进 axios 拦截器的 JSON 处理；超时放宽到 120s（大文件解析可能较慢）
+  return http
+    .post('/bi/sandbox/import-file', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000
+    })
+    .then((r) => r.data.data)
+}
+
+// 沙箱操作审计列表（M3）：返回最近 N 条审计记录。
+// GET /bi/sandbox/audit?limit=（默认 50，最大 500）
+export function listSandboxAudit(limit = 50) {
+  return http.get('/bi/sandbox/audit', { params: { limit } }).then((r) => r.data.data)
+}

@@ -20,11 +20,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class RedisPhase1ConnectivityTest {
 
+    /** 用与默认 6379 不同的端口，避免与本机已运行的真实 Redis 冲突；测试仍自包含、无需外部 Redis */
+    private static final int TEST_REDIS_PORT = 16379;
+
     private static RedisServer redisServer;
 
     @BeforeAll
     static void startRedis() throws Exception {
-        redisServer = RedisServer.newRedisServer().port(6379).build();
+        redisServer = RedisServer.newRedisServer().port(TEST_REDIS_PORT).build();
         redisServer.start();
     }
 
@@ -40,7 +43,7 @@ class RedisPhase1ConnectivityTest {
 
     @Test
     void lettuceConnectivityAndSerializationShouldWork() {
-        RedisStandaloneConfiguration cfg = new RedisStandaloneConfiguration("127.0.0.1", 6379);
+        RedisStandaloneConfiguration cfg = new RedisStandaloneConfiguration("127.0.0.1", TEST_REDIS_PORT);
         LettuceConnectionFactory factory = new LettuceConnectionFactory(cfg);
         factory.afterPropertiesSet();
 

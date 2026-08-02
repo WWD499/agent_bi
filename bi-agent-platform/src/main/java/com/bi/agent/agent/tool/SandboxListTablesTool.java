@@ -30,8 +30,9 @@ public class SandboxListTablesTool implements AgentTool {
 
     @Override
     public String description() {
-        return "列出当前作用域数据沙箱（sandbox schema）内的所有用户表，返回物理表名（形如 marts__sales，"
-                + "库前缀与表名之间用双下划线 __ 分隔）。分析前先用本工具确认有哪些表及其全限定名。";
+        return "列出当前作用域数据沙箱（sandbox schema）内的所有用户表，返回每张表的 tableName（短名，如 sales，"
+                + "即写 SQL 时用的 sandbox.\"sales\"）、dbId（所属沙箱库 id）、displayName（显示名）。"
+                + "分析/写表前先用本工具确认有哪些表及其短名。";
     }
 
     @Override
@@ -46,7 +47,10 @@ public class SandboxListTablesTool implements AgentTool {
             JSONArray arr = new JSONArray();
             for (DbTableVo t : tables) {
                 JSONObject o = new JSONObject();
+                // 模型只需记住短名（tableName），配合 dbId 即可唯一定位；不再暴露拼接的物理名
                 o.put("tableName", t.getTableName());
+                o.put("dbId", t.getDbId());
+                o.put("displayName", t.getDisplayName());
                 arr.add(o);
             }
             JSONObject out = new JSONObject();

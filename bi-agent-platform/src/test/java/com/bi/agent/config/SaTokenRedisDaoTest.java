@@ -13,6 +13,7 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.test.context.TestPropertySource;
 import redis.embedded.RedisServer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -34,9 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 内嵌 Redis 服务端（embedded-redis）在 127.0.0.1:6379 提供 Redis，
  * 与 application.yml 的 spring.data.redis 一致，使测试自包含、无需外部 Redis。
  */
+@TestPropertySource(properties = "spring.data.redis.port=16379")
 @SpringBootTest(classes = SaTokenRedisDaoTest.Phase1TestConfig.class,
         webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class SaTokenRedisDaoTest {
+
+    /** 用与默认 6379 不同的端口，避免与本机已运行的真实 Redis 冲突；测试仍自包含、无需外部 Redis */
+    private static final int TEST_REDIS_PORT = 16379;
 
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = {
@@ -51,7 +56,7 @@ class SaTokenRedisDaoTest {
 
     @BeforeAll
     static void startRedis() throws Exception {
-        redisServer = RedisServer.newRedisServer().port(6379).build();
+        redisServer = RedisServer.newRedisServer().port(TEST_REDIS_PORT).build();
         redisServer.start();
     }
 

@@ -7,6 +7,7 @@ import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.llm.PromptBuilder;
 import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
+import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.sql.SqlValidator;
 import com.bi.agent.bi.util.BiDataSourceFactory;
 import com.bi.agent.bi.util.JdbcUrlBuilder;
@@ -60,6 +61,9 @@ public class BiQueryService {
     private BiDataSourceFactory dataSourceFactory;
 
     @Autowired
+    private SandboxQueryService sandboxQueryService;
+
+    @Autowired
     private DataProbeService dataProbeService;
 
     /**
@@ -72,6 +76,12 @@ public class BiQueryService {
      */
     public QueryResultVo naturalLanguageQuery(String userQuery, Long datasourceId, String tableName) {
         log.info("开始自然语言查询：userQuery={}, datasourceId={}, tableName={}", userQuery, datasourceId, tableName);
+
+        // 沙箱模式：datasourceId 为 0（全部沙箱）或负数（-dbId 锁定具体沙箱库）时，路由到沙箱 NL2SQL
+        if (datasourceId == null || datasourceId <= 0) {
+            Long sandboxDbId = (datasourceId == null || datasourceId == 0) ? null : -datasourceId;
+            return sandboxQueryService.naturalLanguageQuerySandbox(userQuery, sandboxDbId);
+        }
 
         // 1. 获取数据源配置
         BiDatasource datasource = datasourceService.selectBiDatasourceById(datasourceId);
@@ -221,6 +231,10 @@ public class BiQueryService {
     public QueryResultVo runReadOnlySql(Long datasourceId, String sql) {
         if (sql == null || sql.trim().isEmpty()) {
             throw new BizException("SQL 不能为空");
+        }
+        // 沙箱模式：datasourceId 为 0 / 负数 时，路由到沙箱只读 SQL（边界校验已在 SandboxQueryService 内完成）
+        if (datasourceId == null || datasourceId <= 0) {
+            return sandboxQueryService.runSandboxReadOnlySql(sql);
         }
         BiDatasource datasource = datasourceService.selectBiDatasourceById(datasourceId);
         if (datasource == null) {

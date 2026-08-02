@@ -108,6 +108,23 @@
             <version>3.1.8</version>
         </dependency>
 
+        <!-- M3 文件上传导入：Apache POI 解析 Excel（.xlsx/.xls），commons-csv 解析 CSV -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-csv</artifactId>
+            <version>1.10.0</version>
+        </dependency>
+
         <!--
           Phase 2 Agent 层：手写 ReAct 工具调用循环，不引入 Spring AI。
           理由：本机 m2 中 Spring AI 1.0.0 GA 构件的模块拆分异常

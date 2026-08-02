@@ -3,6 +3,7 @@
     <div class="sb-head">
       <span class="sb-title">数据沙箱</span>
       <span class="sb-sub">新建「沙箱库」分组管理表，再从数据源克隆或粘贴导入，让 Agent 按库分析，源数据零污染</span>
+      <el-button text :icon="Document" class="sb-audit-btn" @click="openAudit">审计日志</el-button>
     </div>
 
     <div class="sb-body">
@@ -62,6 +63,7 @@
         <el-radio-group v-model="mode" size="small" class="sb-mode">
           <el-radio-button label="datasource">从数据源导入</el-radio-button>
           <el-radio-button label="paste">粘贴导入</el-radio-button>
+          <el-radio-button label="upload">文件上传</el-radio-button>
         </el-radio-group>
 
         <!-- 模式一：从数据源勾选表导入 -->
@@ -104,7 +106,7 @@
         </div>
 
         <!-- 模式二：粘贴导入 -->
-        <div v-else class="sb-import">
+        <div v-else-if="mode === 'paste'" class="sb-import">
           <div class="sb-import-row">
             <el-input v-model="importName" placeholder="表名（英文/数字/下划线）" style="width:220px" />
             <el-select v-model="separator" placeholder="分隔符" style="width:150px">
@@ -126,6 +128,31 @@
           </div>
         </div>
 
+        <!-- 模式三：文件上传（M3） -->
+        <div v-else class="sb-upload">
+          <el-upload
+            ref="uploadRef"
+            :auto-upload="false"
+            :limit="1"
+            :show-file-list="true"
+            accept=".csv,.xlsx,.xls"
+            :on-change="onFileChange"
+            :on-exceed="() => ElMessage.warning('每次仅支持单个文件')"
+            class="sb-upload-drag"
+          >
+            <template #trigger>
+              <el-button :icon="Upload">选择 Excel / CSV 文件</el-button>
+            </template>
+            <template #tip>
+              <div class="sb-tip">支持 .csv / .xlsx / .xls；首行作为表头，自动推断列类型后建表写入「{{ targetDbName }}」</div>
+            </template>
+          </el-upload>
+          <div class="sb-import-row">
+            <el-input v-model="uploadTableName" placeholder="表名（留空则取文件名）" style="width:220px" />
+            <el-button type="primary" :icon="Upload" :loading="uploading" :disabled="!uploadFile || targetDbId == null" @click="doUpload">导入沙箱</el-button>
+          </div>
+        </div>
+
         <!-- 选中表预览 -->
         <div v-if="selected" class="sb-preview">
           <div class="sb-preview-head">
@@ -138,7 +165,7 @@
             </el-tag>
           </div>
           <el-table v-if="previewData.length" :data="previewData" size="small" max-height="320" border>
-            <el-table-column v-for="col in previewColumns" :key="col" :prop="col" :label="col" />
+            <el-table-column v-for="col in previewColumns" :key="col" :prop="col" :label="col" sortable />
           </el-table>
           <div v-else class="sb-empty">暂无数据预览</div>
         </div>
@@ -164,13 +191,38 @@
         <el-button type="primary" :loading="creating" @click="createDb">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 沙箱操作审计抽屉（M3） -->
+    <el-drawer v-model="auditVisible" title="沙箱操作审计" size="62%" direction="rtl">
+      <div class="sb-audit">
+        <div class="sb-audit-bar">
+          <span class="sb-audit-tip">记录沙箱内的导入 / 建表 / 落表 / 删表等写操作（旁路登记，不影响主流程）</span>
+          <el-button text :icon="Refresh" :loading="auditLoading" @click="loadAudit">刷新</el-button>
+        </div>
+        <el-table :data="auditList" size="small" max-height="72vh" border stripe>
+          <el-table-column prop="operation" label="操作" width="130" />
+          <el-table-column prop="target" label="对象" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="operator" label="操作人" width="100" />
+          <el-table-column label="结果" width="80">
+            <template #default="{ row }">
+              <el-tag :type="row.success ? 'success' : 'danger'" size="small" effect="plain">
+                {{ row.success ? '成功' : '失败' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="createTime" label="时间" width="165" />
+          <el-table-column prop="detail" label="详情" min-width="200" show-overflow-tooltip />
+        </el-table>
+        <div v-if="auditList.length === 0 && !auditLoading" class="sb-empty">暂无审计记录</div>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { Refresh, Delete, Upload, ChatDotRound, Plus, Close, Edit } from '@element-plus/icons-vue'
+import { Refresh, Delete, Upload, ChatDotRound, Plus, Close, Edit, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   listSandboxDbs,
@@ -178,6 +230,8 @@ import {
   dropSandboxDb,
   importSandboxText,
   importSandboxFromDatasource,
+  importSandboxFile,
+  listSandboxAudit,
   listSandboxTables,
   getSandboxColumns,
   getSandboxData,
@@ -215,6 +269,17 @@ const newDbName = ref('')
 const newDbKey = ref('')
 const newDbRemark = ref('')
 const creating = ref(false)
+
+// 文件上传（M3）
+const uploadRef = ref(null)
+const uploadFile = ref(null)
+const uploadTableName = ref('')
+const uploading = ref(false)
+
+// 审计日志（M3）
+const auditVisible = ref(false)
+const auditList = ref([])
+const auditLoading = ref(false)
 
 const targetDbName = computed(() => {
   const d = dbs.value.find((x) => x.id === targetDbId.value)
@@ -374,6 +439,74 @@ async function removeTable(physicalName) {
     await loadTables()
   } catch (e) {
     // http 拦截器已提示
+  }
+}
+
+// ===== M3：文件上传导入 =====
+
+function onFileChange(file) {
+  // el-upload 的 on-change 回调：file.raw 为原始 File 对象
+  const raw = file && file.raw ? file.raw : file
+  const name = (raw && raw.name) || ''
+  const ok = /\.(csv|xlsx|xls)$/i.test(name)
+  if (!ok) {
+    ElMessage.warning('仅支持 .csv / .xlsx / .xls 文件')
+    uploadFile.value = null
+    if (uploadRef.value) uploadRef.value.clearFiles()
+    return
+  }
+  uploadFile.value = raw
+  // 未手动填表名时，用文件名（去扩展名）自动填充
+  if (!uploadTableName.value.trim()) {
+    uploadTableName.value = name.replace(/\.[^.]+$/, '')
+  }
+}
+
+async function doUpload() {
+  if (!uploadFile.value) {
+    ElMessage.warning('请先选择文件')
+    return
+  }
+  if (targetDbId.value == null) {
+    ElMessage.warning('请先选择目标沙箱库')
+    return
+  }
+  uploading.value = true
+  try {
+    const res = await importSandboxFile(uploadFile.value, uploadTableName.value.trim(), targetDbId.value)
+    ElMessage.success(`导入成功：${res.tableName || ''}，共 ${res.rowCount || 0} 行`)
+    uploadFile.value = null
+    uploadTableName.value = ''
+    if (uploadRef.value) uploadRef.value.clearFiles()
+    await loadTables()
+    const tName = res.tableName
+    if (tName) {
+      const dbId = targetDbId.value
+      selectTable(tName, dbId)
+    }
+  } catch (e) {
+    // http 拦截器已提示
+  } finally {
+    uploading.value = false
+  }
+}
+
+// ===== M3：审计日志 =====
+
+async function openAudit() {
+  auditVisible.value = true
+  await loadAudit()
+}
+
+async function loadAudit() {
+  auditLoading.value = true
+  try {
+    const list = await listSandboxAudit(100)
+    auditList.value = Array.isArray(list) ? list : []
+  } catch (e) {
+    auditList.value = []
+  } finally {
+    auditLoading.value = false
   }
 }
 
@@ -680,5 +813,35 @@ onMounted(() => {
   color: var(--text-dim);
   font-style: normal;
   margin-left: 4px;
+}
+.sb-head {
+  position: relative;
+}
+.sb-audit-btn {
+  margin-left: auto;
+}
+.sb-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sb-upload-drag :deep(.el-upload),
+.sb-upload-drag :deep(.el-upload-list) {
+  width: 100%;
+}
+.sb-audit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+.sb-audit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sb-audit-tip {
+  font-size: 12px;
+  color: var(--text-dim);
 }
 </style>

@@ -1,9 +1,12 @@
 package com.bi.agent.controller.bi;
 
 import com.alibaba.fastjson2.JSONObject;
+import java.util.List;
+import java.util.Map;
 import com.bi.agent.bi.domain.BiSandboxDb;
 import com.bi.agent.bi.service.SandboxImportService;
 import com.bi.agent.bi.service.SandboxQueryService;
+import com.bi.agent.bi.service.SandboxAuditService;
 import com.bi.agent.bi.vo.DbColumnVo;
 import com.bi.agent.bi.vo.DbTableVo;
 import com.bi.agent.bi.vo.QueryResultVo;
@@ -19,6 +22,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.MediaType;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 import java.util.regex.Pattern;
@@ -54,6 +59,9 @@ public class BiSandboxController {
 
     @Autowired
     private SandboxImportService sandboxImportService;
+
+    @Autowired
+    private SandboxAuditService sandboxAuditService;
 
     // ===== 沙箱库（逻辑命名空间） =====
 
@@ -128,6 +136,38 @@ public class BiSandboxController {
         }
     }
 
+    /**
+     * 文件上传导入（M3）：支持 Excel(.xlsx/.xls) 与 CSV(.csv)。
+     * 解析后自动推断列类型、建表写入沙箱，并登记审计。
+     * form-data：file=文件, tableName=表短名, dbId=目标沙箱库id(可选)
+     */
+    @PostMapping(value = "/import-file", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public Result<JSONObject> importFromFile(@org.springframework.web.bind.annotation.RequestParam("file") MultipartFile file,
+                                             @org.springframework.web.bind.annotation.RequestParam("tableName") String tableName,
+                                             @org.springframework.web.bind.annotation.RequestParam(value = "dbId", required = false) Long dbId) {
+        try {
+            JSONObject res = sandboxImportService.importFromFile(file, tableName, dbId);
+            return Result.ok(res);
+        } catch (Exception e) {
+            log.warn("文件导入沙箱失败：{}", e.getMessage());
+            return Result.fail(400, e.getMessage());
+        }
+    }
+
+    /**
+     * 沙箱操作审计列表（M3）：返回最近 N 条审计记录。
+     * 参数：?limit=（默认 50，最大 500）
+     */
+    @GetMapping("/audit")
+    public Result<List<Map<String, Object>>> listAudit(@RequestParam(defaultValue = "50") int limit) {
+        try {
+            return Result.ok(sandboxAuditService.listRecent(limit));
+        } catch (Exception e) {
+            log.warn("沙箱审计查询失败：{}", e.getMessage());
+            return Result.fail(500, e.getMessage());
+        }
+    }
+
     /** 数据源批量导入请求体 */
     public static class ImportDsReq {
         private Long datasourceId;
@@ -192,12 +232,60 @@ public class BiSandboxController {
             limit = 100;
         }
         try {
-            String sql = "SELECT * FROM " + SandboxQueryService.SANDBOX_SCHEMA + ".\"" + name + "\" LIMIT " + limit;
+            List<DbColumnVo> columns = sandboxQueryService.listSandboxColumns(name);
+            String orderCol = resolveDefaultOrderColumn(columns);
+            String sql = "SELECT * FROM " + SandboxQueryService.SANDBOX_SCHEMA + ".\"" + name + "\"";
+            if (orderCol != null) {
+                sql += " ORDER BY \"" + orderCol + "\"";
+            }
+            sql += " LIMIT " + limit;
             return Result.ok(sandboxQueryService.runSandboxReadOnlySql(sql));
         } catch (Exception e) {
             log.warn("沙箱数据预览失败：{}", e.getMessage());
             return Result.fail(500, e.getMessage());
         }
+    }
+
+    /**
+     * 为沙箱数据预览选择默认排序列。规则：
+     * <ol>
+     *   <li>优先精确匹配名为 {@code id} 的列（不区分大小写）；</li>
+     *   <li>其次匹配以 {@code _id} 结尾的列（如 product_id，不区分大小写）；</li>
+     *   <li>都没有则回退到第一列，保证返回顺序稳定；</li>
+     *   <li>空表/无列时不排序。</li>
+     * </ol>
+     */
+    private String resolveDefaultOrderColumn(List<DbColumnVo> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return null;
+        }
+        String idCol = null;
+        String suffixIdCol = null;
+        String firstCol = null;
+        for (DbColumnVo c : columns) {
+            String col = c.getColumnName();
+            if (col == null) {
+                continue;
+            }
+            if (firstCol == null) {
+                firstCol = col;
+            }
+            String lower = col.toLowerCase();
+            if ("id".equals(lower)) {
+                idCol = col;
+                break;
+            }
+            if (lower.endsWith("_id") && suffixIdCol == null) {
+                suffixIdCol = col;
+            }
+        }
+        if (idCol != null) {
+            return idCol;
+        }
+        if (suffixIdCol != null) {
+            return suffixIdCol;
+        }
+        return firstCol;
     }
 
     @PostMapping("/execute")

@@ -9,7 +9,8 @@
 
 - 物理上仍只有**一个 `sandbox` schema**，所有沙箱表都落在 `sandbox."物理名"` 下。
 - 逻辑上引入「沙箱库」（`bi_sandbox_db`）作为分组，表与库是多对一关系。
-- 物理表名 = `db_key + "__" + table_name`（如 `marts__sales`），天然避免跨库重名，又始终满足 `sandbox.` 前缀校验。
+- 物理表名直接等于用户给定的**短名**（如 `sales`），全沙箱短名全局唯一；**不再拼接 `db_key`**，
+  既保留 `sandbox.` 安全边界，又彻底避免模型自行拼接 `dbkey__表名` 时丢失双下划线而找不到自己建的表。
 
 > 为什么不用物理多 database：改连接、改权限、破坏已有的 `assertAllTablesInSandbox` 边界校验，风险高；
 > 逻辑命名空间只新增元数据表 + 命名约定，安全边界与单连接架构完全不动。
@@ -32,19 +33,19 @@
 |----|------|
 | id | 主键 |
 | db_id | 所属沙箱库 id（指向 `bi_sandbox_db.id`） |
-| table_name | 短名（同库内唯一） |
-| physical_name | 物理表名 = `db_key || '__' || table_name` |
+| table_name | 短名（全沙箱唯一，即用户给定的表名） |
+| physical_name | 物理表名，新表 == 短名；历史遗留表可能为旧拼接名 `db_key__表名` |
 | columns_json / row_count / source_type / remark | 同原设计 |
 
-唯一约束：`(db_id, table_name)` —— 同一库内表名不可重复，**跨库允许同名**。
+唯一约束：`(table_name)` —— 全沙箱短名唯一（**跨库不允许同名**，由代码 `countByTableName` 在写前校验）。
 
 ---
 
 ## 3. 物理命名约定
 
-- 建表：`CREATE TABLE sandbox."{db_key}__{table_name}" (...)`。
-- 查询/NL2SQL：一律 `sandbox."{db_key}__{table_name}"`（双引号包裹，兼容 `__` 与未来扩展）。
-- 边界校验 `assertAllTablesInSandbox` 已支持双引号物理名，所有 `FROM/JOIN` 必须 `sandbox.` 前缀，杜绝越权访问 `public` 业务表 / `bi_*` 系统表。
+- 建表：`CREATE TABLE sandbox."{table_name}" (...)`（物理名即短名，不再拼接库前缀）。
+- 查询/NL2SQL：一律 `sandbox."{table_name}"`（表名即 list_tables 返回的短名，由模型原样引用，无需任何拼接）。
+- 边界校验 `assertAllTablesInSandbox` 要求所有 `FROM/JOIN` 必须 `sandbox.` 前缀，杜绝越权访问 `public` 业务表 / `bi_*` 系统表。
 
 ---
 
@@ -77,6 +78,8 @@
 | `DELETE /db/{id}` | 删除沙箱库（级联删物理表 + 元数据，默认库 `default` 禁止删除） |
 | `POST /import` | 粘贴导入，`body` 可带 `dbId` |
 | `POST /import-datasource` | 数据源克隆导入，`body` 可带 `dbId` |
+| `POST /import-file` | **（M3）** 上传文件导入，表单 `file`（.csv/.xlsx/.xls）+ `tableName` + `dbId`；后端 POI / commons-csv 解析、自动推断列类型、建表写入 |
+| `GET /audit?limit=` | **（M3）** 审计日志，返回最近 N 条（`operator / operation / target / detail / success / fail_reason / create_time`） |
 | `GET /tables?dbId=` | 列出沙箱表（不传 dbId 则全部库；返回含 `physicalName/displayName/dbId/dbKey`） |
 | `GET /tables/{physicalName}/columns` | 列结构（按物理名） |
 | `GET /tables/{physicalName}/data?limit=` | 预览（按物理名） |
@@ -100,4 +103,5 @@
 
 - 表短名、库 dbKey 当前规范化为 ASCII 标识符；库展示名可中文。后续可做中文友好名 + 拼音/哈希 key。
 - 多用户（`owner`）仅留字段，未接鉴权隔离。
-- M2（写工具）、M3（Excel 上传 / 审计）按原路线图推进，本设计为「主题域 / 数据集市」层落地。
+- **M2（写工具）已落地**：Agent 沙箱写工具 `SandboxCreateTableTool` / `SandboxMaterializeTool` / `SandboxDropTableTool` 均已接入 `requiresConfirmation=true` 确认循环（`AgentSession` 状态机 + `AgentChatController /confirm` 端点）。
+- **M3（Excel 上传 / 审计）已落地**：`SandboxImportService.importFromFile`（POI + commons-csv 解析）支持 .csv/.xlsx/.xls 上传导入；`SandboxAuditService` + `bi_sandbox_audit` 表对全部导入 / 写表 / 删库操作留痕；前端「数据沙箱」页提供上传入口与审计日志抽屉。

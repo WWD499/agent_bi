@@ -40,12 +40,23 @@ export function shareDashboard(token) {
   return http.get('/bi/dashboard/share', { params: { token } }).then((r) => r.data.data)
 }
 
+// 后端统一包装 Result{code,msg,data}：业务失败时 HTTP 仍为 200，需要显式检查 code。
+function checkResult(r) {
+  if (r && r.data) {
+    if (r.data.code !== 200) {
+      return Promise.reject(new Error(r.data.msg || '请求失败'))
+    }
+    return r.data.data
+  }
+  return r
+}
+
 // 分享页取数：POST /bi/dashboard/share-query?token=xx&widgetIndex=n → QueryResultVo
 // 后端只按「已保存」的 widget 配置取数，忽略请求体，杜绝越权执行任意 SQL。
 export function shareQuery(token, widgetIndex) {
   return http
     .post(`/bi/dashboard/share-query?token=${encodeURIComponent(token)}&widgetIndex=${widgetIndex}`, {})
-    .then((r) => r.data.data)
+    .then(checkResult)
 }
 
 // ==================== 出图查询（原有能力） ====================
@@ -57,5 +68,5 @@ export function shareQuery(token, widgetIndex) {
 // 注意：单个面板 SQL 失败会触发全局错误提示，调用方需 try/catch 隔离，避免整屏崩溃
 export function runDashboardQuery(req) {
   const url = req && req.sql ? '/bi/dashboard/query' : '/bi/dashboard/query-by-config'
-  return http.post(url, req).then((r) => r.data.data)
+  return http.post(url, req).then(checkResult)
 }

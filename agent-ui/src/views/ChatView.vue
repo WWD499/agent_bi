@@ -17,15 +17,58 @@
         <div v-else class="answer-inner">
           <div v-for="(m, i) in historyList" :key="'h' + i" class="bubble" :class="m.role">
             <div class="bubble-role">{{ m.role === 'user' ? '我' : 'AI' }}</div>
-            <div class="bubble-text">{{ m.content }}</div>
-            <ChartBlock v-for="(c, ci) in (m.charts || [])" :key="'c' + ci" :option="c" />
+            <div class="bubble-text">
+              <template v-if="hasChartPlaceholder(m.content)">
+                <template v-for="(part, pi) in parseAnswer(m.content)" :key="pi">
+                  <template v-if="part.type === 'text'">
+                    <template v-for="(seg, si) in renderTextSegments(part.text)" :key="si">
+                      <template v-if="seg.type === 'plain'">{{ seg.text }}</template>
+                      <a v-else href="javascript:void(0)" class="chat-link" @click.prevent="openLink(seg.href)">{{ seg.text }}</a>
+                    </template>
+                  </template>
+                  <ChartBlock
+                    v-else-if="part.type === 'chart' && chartByIndexInMessage(m.charts, part.index)"
+                    :option="chartByIndexInMessage(m.charts, part.index)"
+                    class="inline-chart"
+                  />
+                  <div v-else-if="part.type === 'chart'" class="inline-chart-missing">
+                    [图表未生成]
+                  </div>
+                </template>
+              </template>
+              <template v-else>
+                <template v-for="(seg, si) in renderTextSegments(m.content)" :key="si">
+                  <template v-if="seg.type === 'plain'">{{ seg.text }}</template>
+                  <a v-else href="javascript:void(0)" class="chat-link" @click.prevent="openLink(seg.href)">{{ seg.text }}</a>
+                </template>
+              </template>
+            </div>
+            <ChartBlock v-if="!hasChartPlaceholder(m.content)" v-for="(c, ci) in (m.charts || [])" :key="'c' + ci" :option="c" />
           </div>
           <div class="answer-text">
-            <template v-if="answer">{{ answer }}</template>
+            <template v-if="answerParts.length">
+              <template v-for="(part, pi) in answerParts" :key="pi">
+                <template v-if="part.type === 'text'">
+                  <template v-for="(seg, si) in renderTextSegments(part.text)" :key="si">
+                    <template v-if="seg.type === 'plain'">{{ seg.text }}</template>
+                    <a v-else href="javascript:void(0)" class="chat-link" @click.prevent="openLink(seg.href)">{{ seg.text }}</a>
+                  </template>
+                </template>
+                <ChartBlock
+                  v-else-if="part.type === 'chart' && chartByIndex[part.index]"
+                  :option="chartByIndex[part.index]"
+                  class="inline-chart"
+                />
+                <div v-else-if="part.type === 'chart'" class="inline-chart-missing">
+                  [图表未生成]
+                </div>
+              </template>
+            </template>
             <span v-else-if="running" class="caret">▌</span>
           </div>
+          <!-- 模型若未按约定插入 {{chart:*}} 占位符，兜底把图表渲染在文字下方 -->
           <ChartBlock
-            v-for="(c, ci) in currentCharts"
+            v-for="(c, ci) in orphanCharts"
             :key="'cc' + ci"
             :option="c"
             class="current-chart"
@@ -38,7 +81,7 @@
 
       <section class="input glass">
         <div class="ds-row">
-          <el-select v-model="datasourceId" placeholder="选择数据源" filterable :disabled="running" style="width:240px">
+          <el-select v-model="datasourceId" placeholder="选择沙箱库" filterable :disabled="running" style="width:240px">
             <el-option v-for="ds in datasources" :key="ds.id" :label="`${ds.name}（${ds.type} / ${ds.databaseName}）`" :value="ds.id" />
           </el-select>
         </div>
@@ -47,13 +90,43 @@
           type="textarea"
           :rows="2"
           resize="none"
-          :disabled="running"
+          :disabled="running || awaitingConfirm"
           placeholder="用自然语言描述你的分析需求…"
           @keydown.enter.exact.prevent="send"
         />
         <div class="send-row">
-          <span class="hint">Enter 发送 · Shift+Enter 换行</span>
-          <el-button v-if="!running" type="primary" :icon="Promotion" @click="send">发送</el-button>
+          <div class="switch-group">
+            <el-tooltip content="开启后智能体可在沙箱内建表/改显示名/导入/落表/删表（仅沙箱模式生效）" placement="top">
+              <span class="sw-item" :class="{ disabled: !isSandbox }">
+                <el-switch
+                  v-model="allowWrite"
+                  :disabled="running || awaitingConfirm || !isSandbox"
+                  inline-prompt
+                  active-text="写"
+                  inactive-text="读"
+                />
+                <span class="sw-label">允许写库</span>
+              </span>
+            </el-tooltip>
+            <el-tooltip content="开启后写操作直接执行、不再弹确认框（需先开启允许写库，谨慎使用）" placement="top">
+              <span class="sw-item" :class="{ disabled: !isSandbox || !allowWrite }">
+                <el-switch
+                  v-model="skipConfirm"
+                  :disabled="running || awaitingConfirm || !allowWrite || !isSandbox"
+                  inline-prompt
+                  active-text="免确认"
+                  inactive-text="需确认"
+                />
+                <span class="sw-label">跳过确认</span>
+              </span>
+            </el-tooltip>
+          </div>
+          <span class="hint">
+            <template v-if="awaitingConfirm">⚠️ 等待您确认写操作…</template>
+            <template v-else>Enter 发送 · Shift+Enter 换行</template>
+          </span>
+          <el-button v-if="!running && !awaitingConfirm" type="primary" :icon="Promotion" @click="send">发送</el-button>
+          <el-button v-else-if="awaitingConfirm" type="warning" disabled>等待确认…</el-button>
           <el-button v-else type="danger" :icon="VideoPause" @click="interrupt">中断</el-button>
         </div>
       </section>
@@ -64,14 +137,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { Promotion, VideoPause, Moon, Sunny } from '@element-plus/icons-vue'
-import { streamChat, getHistory } from '@/api/agent'
-import { listDatasources } from '@/api/datasource'
+import { streamChat, getHistory, confirmAgent } from '@/api/agent'
 import { listSandboxDbs } from '@/api/sandbox'
 import TracePanel from '@/components/TracePanel.vue'
 import HistoryDrawer from '@/components/HistoryDrawer.vue'
 import ChartBlock from '@/components/ChartBlock.vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+
+const router = useRouter()
 
 const query = ref('')
 const answer = ref('')
@@ -79,6 +155,8 @@ const answer = ref('')
 const currentCharts = ref([])
 const trace = ref([])
 const running = ref(false)
+/** 是否正在等待用户对写操作的确认（M2）：此时禁用输入框，避免并发 */
+const awaitingConfirm = ref(false)
 const sessionId = ref(genSid())
 const answerBox = ref(null)
 const historyList = ref([])
@@ -86,10 +164,93 @@ const drawerVisible = ref(false)
 /** 数据源下拉（复用 QueryView 的数据源列表接口），跨会话保留 */
 const datasourceId = ref(null)
 const datasources = ref([])
+/** 双开关：允许写库（主开关）/ 跳过确认（子开关），仅沙箱模式生效 */
+const allowWrite = ref(false)
+const skipConfirm = ref(false)
+
+/** 当前流式答案中 {{chart:N}} 占位符解析后的片段列表（文字与图表交错） */
+const answerParts = computed(() => parseAnswer(answer.value))
+/** 按 _chartIndex 建立当前图表索引，供占位符查找 */
+const chartByIndex = computed(() => {
+  const map = {}
+  for (const c of currentCharts.value) {
+    const idx = c && c._chartIndex
+    if (idx !== undefined && idx !== null) map[idx] = c
+  }
+  return map
+})
+/** 没有被占位符引用的图表，兜底渲染在文字下方 */
+const orphanCharts = computed(() => {
+  const used = new Set(answerParts.value.filter((p) => p.type === 'chart').map((p) => p.index))
+  return currentCharts.value.filter((c) => {
+    const idx = c && c._chartIndex
+    return idx === undefined || idx === null || !used.has(idx)
+  })
+})
+
+function hasChartPlaceholder(text) {
+  return typeof text === 'string' && /\{\{chart:\d+\}\}/.test(text)
+}
+function parseAnswer(text) {
+  if (!text) return []
+  const parts = []
+  const regex = /\{\{chart:(\d+)\}\}/g
+  let last = 0
+  let m
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) parts.push({ type: 'text', text: text.slice(last, m.index) })
+    parts.push({ type: 'chart', index: Number(m[1]) })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) parts.push({ type: 'text', text: text.slice(last) })
+  return parts
+}
+function chartByIndexInMessage(charts, index) {
+  return (charts || []).find((c) => c && c._chartIndex === index)
+}
+/** 把文本中的 Markdown 链接 [文本](链接) 拆分为可渲染片段 */
+function renderTextSegments(text) {
+  if (!text) return [{ type: 'plain', text: '' }]
+  const regex = /\[([^\]]+)\]\(([^)]+)\)/g
+  const segments = []
+  let last = 0
+  let m
+  while ((m = regex.exec(text)) !== null) {
+    if (m.index > last) segments.push({ type: 'plain', text: text.slice(last, m.index) })
+    segments.push({ type: 'link', text: m[1], href: m[2] })
+    last = m.index + m[0].length
+  }
+  if (last < text.length) segments.push({ type: 'plain', text: text.slice(last) })
+  return segments
+}
+function openLink(href) {
+  if (!href) return
+  if (href.startsWith('/')) {
+    // 站内相对路径走 Vue Router，避免整页刷新
+    router.push(href)
+  } else {
+    // 绝对路径或外部链接新开标签页
+    window.open(href, '_blank')
+  }
+}
+/** 是否处于沙箱模式（datasourceId=0 全部沙箱 / 负数锁定具体沙箱库）；业务库模式无写工具，开关无意义 */
+const isSandbox = computed(() => datasourceId.value !== null
+  && (datasourceId.value === 0 || datasourceId.value < 0))
+// 主开关关闭时，子开关强制归位（避免「未开写库却记忆着免确认」的脏状态）
+watch(allowWrite, (v) => {
+  localStorage.setItem(LS_WRITE, v ? '1' : '0')
+  if (!v) skipConfirm.value = false
+})
+watch(skipConfirm, (v) => {
+  if (allowWrite.value) localStorage.setItem(LS_SKIP, v ? '1' : '0')
+})
 /** localStorage 中持久化的「最后活跃会话」key，刷新后恢复 */
 const LS_SID = 'bi_last_sid'
 /** localStorage 中持久化的「当前数据源」key，刷新后恢复 */
 const LS_DS = 'bi_ds_id'
+/** localStorage 中持久化的双开关状态 key，刷新后恢复 */
+const LS_WRITE = 'bi_allow_write'
+const LS_SKIP = 'bi_skip_confirm'
 let controller = null
 
 const theme = ref(localStorage.getItem('bi_theme') || 'light')
@@ -103,16 +264,26 @@ function toggleTheme() {
   localStorage.setItem('bi_theme', theme.value)
 }
 function scrollDown() {
-  nextTick(() => {
+  // 多次尝试：nextTick 处理同步渲染，requestAnimationFrame / 延时兜底异步图表、图片等布局变化，
+  // 确保进入会话或加载历史后稳稳落在最新消息（最底部）。
+  const doScroll = () => {
     const el = answerBox.value
     if (el) el.scrollTop = el.scrollHeight
-  })
+  }
+  nextTick(doScroll)
+  requestAnimationFrame(doScroll)
+  setTimeout(doScroll, 80)
 }
 
 function handleEvent(ev) {
   const { event, data } = ev
   if (event === 'token') {
     answer.value += data
+  } else if (event === 'confirm') {
+    // M2：后端在即将执行写工具（建表/落表/CTAS/删表）前弹出的确认事件，
+    // 此时后端 ReAct 循环已阻塞在 confirmFuture 上，必须用户明确同意/拒绝后才继续。
+    handleConfirmEvent(data)
+    return
   } else if (event === 'tool_call') {
     let parsed
     try {
@@ -178,6 +349,70 @@ function handleEvent(ev) {
   scrollDown()
 }
 
+/**
+ * 处理后端弹出的「写操作确认」事件（M2）。
+ * 解析 payload（title / detail），弹出确认框；用户同意→调 /agent/confirm{approved:true}，
+ * 拒绝/关闭→调 /agent/confirm{approved:false}，唤醒后端挂起的确认 future。
+ * 注意：后端有 120s 超时兜底（超时按拒绝处理），前端应尽量及时响应。
+ */
+async function handleConfirmEvent(data) {
+  let payload = {}
+  try {
+    payload = JSON.parse(data || '{}')
+  } catch {
+    payload = {}
+  }
+  const title = payload.title || '写操作确认'
+  const detail = payload.detail || 'Agent 即将在沙箱中执行写操作，是否允许？'
+  awaitingConfirm.value = true
+  // 在推理轨迹里先留一个提示，避免对话框未弹出时用户无感知
+  trace.value.push({ type: 'reasoning', text: '⚠️ ' + title + '：已弹出确认对话框，请查看页面中央…' })
+  scrollDown()
+  // 若用户切到别的标签页，闪烁标题提醒
+  let titleFlash = null
+  if (document.hidden) {
+    const originalTitle = document.title
+    let flash = true
+    titleFlash = setInterval(() => {
+      document.title = flash ? '【等待确认】' + originalTitle : originalTitle
+      flash = !flash
+    }, 800)
+  }
+  try {
+    await ElMessageBox.confirm(detail, title, {
+      type: 'warning',
+      confirmButtonText: '同意并执行',
+      cancelButtonText: '拒绝',
+      distinguishCancelAndClose: true,
+      closeOnClickModal: false,
+      closeOnPressEscape: false,
+      showClose: false
+    })
+    try {
+      await confirmAgent(sessionId.value, true)
+      trace.value.push({ type: 'reasoning', text: '✅ 已同意，Agent 正在执行写操作…' })
+    } catch (e) {
+      // 网络/服务端异常不影响主流程，后端超时兜底会按拒绝处理
+      ElMessage.warning('确认请求发送失败，后端将超时自动取消')
+    }
+  } catch (e) {
+    // 用户点「拒绝」或关闭对话框 → 通知后端取消
+    try {
+      await confirmAgent(sessionId.value, false)
+    } catch {
+      /* ignore */
+    }
+    trace.value.push({ type: 'reasoning', text: '⛔ 已拒绝写操作，Agent 将改用只读分析方案。' })
+  } finally {
+    awaitingConfirm.value = false
+    if (titleFlash) {
+      clearInterval(titleFlash)
+      document.title = document.title.replace(/^【等待确认】/, '')
+    }
+    scrollDown()
+  }
+}
+
 async function send() {
   const q = query.value.trim()
   if (!q || running.value) return
@@ -198,6 +433,8 @@ async function send() {
       query: q,
       sessionId: sessionId.value,
       datasourceId: datasourceId.value,
+      allowWrite: allowWrite.value,
+      skipConfirm: skipConfirm.value,
       token: localStorage.getItem('bi_token') || '',
       signal: controller.signal,
       onEvent: handleEvent
@@ -234,6 +471,7 @@ function onOpenSession({ sessionId: sid, messages }) {
   answer.value = ''
   currentCharts.value = []
   trace.value = []
+  scrollDown()
 }
 
 onMounted(async () => {
@@ -243,39 +481,41 @@ onMounted(async () => {
   if (dsStored) {
     const n = Number(dsStored)
     if (Number.isInteger(n)) {
-      datasourceId.value = n
+      // 旧版存的是「源数据库正数 id」，现在只支持沙箱：正数统一回落为「全部沙箱」(0)
+      datasourceId.value = n > 0 ? 0 : n
     } else {
       // 脏值：清除并让后续自动选中逻辑接管
       console.warn('[BI] localStorage bi_ds_id 有脏值:', dsStored, '已清除')
       localStorage.removeItem(LS_DS)
     }
   }
-  // 拉取数据源列表（失败不阻塞页面）
+  // 刷新后恢复双开关状态（仅沙箱模式有意义；主开关关时子开关强制关）
+  if (localStorage.getItem(LS_WRITE) === '1') {
+    allowWrite.value = true
+    if (localStorage.getItem(LS_SKIP) === '1') {
+      skipConfirm.value = true
+    }
+  }
+  // 拉取沙箱数据源列表（仅沙箱库可选，源数据库不在此出现）
   try {
-    const list = await listDatasources()
-    datasources.value = Array.isArray(list) ? list : []
-    // 追加沙箱虚拟数据源：
-    //  - id=0 表示「全部沙箱」（后端 BiAgentService 识别为 sandbox 模式，作用域为整个 sandbox schema）
+    // 沙箱虚拟数据源：
+    //  - id=0 表示「全部沙箱」（后端识别为 sandbox 模式，作用域为整个 sandbox schema）
     //  - id=-dbId 表示锁定某个具体沙箱库（作用域收敛到该库，便于「按库分析」）
     const sandboxOptions = [
       { id: 0, name: '数据沙箱（全部）', type: 'sandbox', databaseName: 'sandbox' }
     ]
-    try {
-      const dbs = await listSandboxDbs()
-      if (Array.isArray(dbs)) {
-        for (const db of dbs) {
-          sandboxOptions.push({
-            id: -db.id,
-            name: '沙箱·' + db.name,
-            type: 'sandbox',
-            databaseName: db.dbKey
-          })
-        }
+    const dbs = await listSandboxDbs()
+    if (Array.isArray(dbs)) {
+      for (const db of dbs) {
+        sandboxOptions.push({
+          id: -db.id,
+          name: '沙箱·' + db.name,
+          type: 'sandbox',
+          databaseName: db.dbKey
+        })
       }
-    } catch (e) {
-      // 沙箱库列表拉取失败不影响其余功能
     }
-    datasources.value = datasources.value.concat(sandboxOptions)
+    datasources.value = sandboxOptions
     if (datasourceId.value == null && datasources.value.length > 0) {
       datasourceId.value = datasources.value[0].id
     }
@@ -293,6 +533,7 @@ onMounted(async () => {
         content: m.content,
         charts: m.charts || []
       }))
+      scrollDown()
     } catch (e) {
       // 未登录或网络异常：仅保留 sid，不渲染历史
     }
@@ -400,6 +641,30 @@ onMounted(async () => {
   margin-top: 12px;
   height: 340px;
 }
+.chat-link {
+  color: var(--el-color-primary, #409eff);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.chat-link:hover {
+  color: var(--el-color-primary-light-3, #66b1ff);
+}
+.inline-chart {
+  margin: 12px 0;
+  height: 340px;
+}
+.inline-chart-missing {
+  margin: 12px 0;
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #999);
+  background: var(--code-bg, #f5f7fa);
+  border: 1px dashed var(--border, #dcdfe6);
+  border-radius: 10px;
+  font-size: 14px;
+}
 .trace-wrap {
   margin-top: 16px;
   display: flex;
@@ -417,6 +682,24 @@ onMounted(async () => {
 .hint {
   font-size: 12px;
   color: var(--text-dim);
+}
+.switch-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.sw-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.sw-item.disabled {
+  opacity: 0.45;
+}
+.sw-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  user-select: none;
 }
 .ds-row {
   margin-bottom: 8px;

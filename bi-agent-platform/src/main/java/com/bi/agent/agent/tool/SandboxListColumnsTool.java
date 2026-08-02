@@ -26,14 +26,14 @@ public class SandboxListColumnsTool implements AgentTool {
 
     @Override
     public String description() {
-        return "列出数据沙箱某张表的字段（列名、类型）。调用前先用 list_tables 确认物理表名，"
-                + "传入的 tableName 必须是 list_tables 返回的物理名（如 marts__sales，可含 __ 前缀）。";
+        return "列出数据沙箱某张表的字段（列名、类型）。调用前先用 list_tables 确认表名，"
+                + "传入的 tableName 必须是 list_tables 返回的 tableName（短名，如 sales，即 sandbox.\"sales\"）。";
     }
 
     @Override
     public String jsonSchema() {
         return "{\"type\":\"object\",\"properties\":{"
-                + "\"tableName\":{\"type\":\"string\",\"description\":\"沙箱物理表名，例如 marts__sales（来自 list_tables 的返回）\"}},"
+                + "\"tableName\":{\"type\":\"string\",\"description\":\"沙箱表名（短名），例如 sales（来自 list_tables 的返回，对应 sandbox.\\\"sales\\\"）\"}},"
                 + "\"required\":[\"tableName\"]}";
     }
 
