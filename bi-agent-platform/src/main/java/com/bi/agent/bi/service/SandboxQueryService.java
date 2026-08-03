@@ -158,7 +158,7 @@ public class SandboxQueryService {
             log.warn("非法沙箱物理表名，拒绝获取字段：{}", physicalName);
             return Collections.emptyList();
         }
-        return jdbcTemplate.query(
+        List<DbColumnVo> cols = jdbcTemplate.query(
                 "SELECT column_name, data_type FROM information_schema.columns "
                         + "WHERE table_schema = '" + SANDBOX_SCHEMA + "' AND table_name = ? ORDER BY ordinal_position",
                 (rs, i) -> {
@@ -168,6 +168,33 @@ public class SandboxQueryService {
                     return vo;
                 },
                 physicalName);
+        // 从元数据 columns_json 回填中文标签（label），便于 NL2SQL 把中文提问映射到物理列
+        try {
+            BiSandboxTable meta = sandboxMapper.selectByPhysicalName(physicalName);
+            if (meta != null && meta.getColumnsJson() != null && !meta.getColumnsJson().isEmpty()) {
+                JSONArray arr = JSON.parseArray(meta.getColumnsJson());
+                if (arr != null) {
+                    Map<String, String> labelMap = new HashMap<>();
+                    for (int i = 0; i < arr.size(); i++) {
+                        JSONObject c = arr.getJSONObject(i);
+                        String n = c.getString("name");
+                        String l = c.getString("label");
+                        if (n != null && l != null && !l.equals(n)) {
+                            labelMap.put(n.toLowerCase(), l);
+                        }
+                    }
+                    for (DbColumnVo vo : cols) {
+                        String lbl = labelMap.get(vo.getColumnName().toLowerCase());
+                        if (lbl != null) {
+                            vo.setLabel(lbl);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("回填沙箱列标签失败（不影响物理列查询）：{}", e.getMessage());
+        }
+        return cols;
     }
 
     /**
@@ -245,7 +272,11 @@ public class SandboxQueryService {
             String tbl = t.getTableName();
             schemaText.append("## 表名：").append(SANDBOX_SCHEMA).append(".\"").append(tbl).append("\"\n字段：\n");
             for (DbColumnVo c : listSandboxColumns(tbl)) {
-                schemaText.append("  - ").append(c.getColumnName()).append(' ').append(c.getDataType()).append('\n');
+                schemaText.append("  - ").append(c.getColumnName());
+                if (c.getLabel() != null) {
+                    schemaText.append(" (").append(c.getLabel()).append(')');
+                }
+                schemaText.append(' ').append(c.getDataType()).append('\n');
             }
             schemaText.append('\n');
         }
@@ -453,15 +484,23 @@ public class SandboxQueryService {
             }
             StringBuilder colDefs = new StringBuilder();
             JSONArray colsJson = new JSONArray();
+            Set<String> seenCols = new HashSet<>();
             for (int i = 0; i < columns.size(); i++) {
                 Map<String, String> col = columns.get(i);
-                String cname = col == null ? null : col.get("name");
+                String rawName = col == null ? null : col.get("name");
                 String ctype = col == null ? null : col.get("type");
-                if (cname == null || !IDENT_PATTERN.matcher(cname).matches()) {
-                    throw new BizException("非法列名：" + cname);
+                if (rawName == null || rawName.trim().isEmpty()) {
+                    throw new BizException("列名不能为空");
                 }
                 if (ctype == null || !COL_TYPE_PATTERN.matcher(ctype.trim()).matches()) {
                     throw new BizException("非法列类型：" + ctype + "（仅允许 BIGINT/NUMERIC(18,2)/VARCHAR(n)/TEXT/DATE 等）");
+                }
+                // 列名 sanitize 为 ASCII 物理名（中文列名自动转义），原始列名保留为 label
+                String base = sanitizeIdentifierLocal(rawName);
+                String cname = base;
+                int k = 1;
+                while (!seenCols.add(cname)) {
+                    cname = base + "_" + (k++);
                 }
                 if (i > 0) {
                     colDefs.append(", ");
@@ -469,6 +508,9 @@ public class SandboxQueryService {
                 colDefs.append('"').append(cname).append("\" ").append(ctype.trim());
                 JSONObject o = new JSONObject();
                 o.put("name", cname);
+                if (!rawName.trim().equals(cname)) {
+                    o.put("label", rawName.trim());
+                }
                 o.put("type", ctype.trim());
                 colsJson.add(o);
             }

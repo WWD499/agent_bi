@@ -120,24 +120,14 @@ public class SandboxImportService {
             throw new BizException("至少需要表头行 + 一行数据");
         }
 
-        // 2. 规范化列名
+        // 2. 规范化列名：中文表头 sanitize 为 ASCII 物理列名（与数据源导入一致），原始表头保留为 label
         String[] headers = rows.get(0);
         int colCount = headers.length;
-        String[] colNames = new String[colCount];
-        Set<String> seen = new HashSet<>();
+        String[] colNames = sanitizeColumns(headers);
+        String[] colLabels = new String[colCount];
         for (int i = 0; i < colCount; i++) {
             String h = (headers[i] == null) ? "" : headers[i].trim();
-            if (h.isEmpty()) {
-                h = "col" + (i + 1);
-            }
-            if (!IDENT_PATTERN.matcher(h).matches()) {
-                throw new BizException("列名非法（仅英文/数字/下划线，首字符非数字）：" + headers[i]);
-            }
-            String lc = h.toLowerCase();
-            if (!seen.add(lc)) {
-                throw new BizException("存在重复列名：" + lc);
-            }
-            colNames[i] = lc;
+            colLabels[i] = h.isEmpty() ? ("col" + (i + 1)) : h;
         }
 
         // 3. 按列采样非空值做类型推断
@@ -159,7 +149,7 @@ public class SandboxImportService {
 
         // 4. 组装数据行（去掉表头行）并共用 writeSandboxTable 建表写入
         List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
-        JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "paste", null);
+        JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "paste", null, colLabels);
         auditService.logSuccess(SandboxAuditService.OP_IMPORT_TEXT, res.getString("tableName"), "ui",
                 Map.of("db", db.getName(), "rowCount", res.getInteger("rowCount"),
                         "columns", res.getJSONArray("columns")));
@@ -255,7 +245,7 @@ public class SandboxImportService {
 
             String remark = ds.getName() + "." + src
                     + (allRows.size() >= MAX_IMPORT_ROWS ? " (截断至" + MAX_IMPORT_ROWS + "行)" : "");
-            JSONObject res = writeSandboxTable(db.getId(), target, colNames, colTypes, allRows, "datasource", remark);
+            JSONObject res = writeSandboxTable(db.getId(), target, colNames, colTypes, allRows, "datasource", remark, rawCols);
             results.add(res);
             auditService.logSuccess(SandboxAuditService.OP_IMPORT_DATASOURCE, res.getString("tableName"), "ui",
                     Map.of("source", ds.getName() + "." + src, "db", db.getName(), "rowCount", allRows.size()));
@@ -278,7 +268,7 @@ public class SandboxImportService {
      * @return 导入摘要 JSONObject
      */
     private JSONObject writeSandboxTable(Long dbId, String shortName, String[] colNames, String[] colTypes,
-                                        List<String[]> dataRows, String sourceType, String remark) {
+                                        List<String[]> dataRows, String sourceType, String remark, String[] colLabels) {
         String physicalName = shortName; // 物理名即短名，不再拼接库前缀
         // 1. 动态建表
         StringBuilder ddl = new StringBuilder("CREATE TABLE ")
@@ -320,6 +310,10 @@ public class SandboxImportService {
         for (int c = 0; c < colNames.length; c++) {
             JSONObject o = new JSONObject();
             o.put("name", colNames[c]);
+            String lbl = (colLabels != null && c < colLabels.length) ? colLabels[c] : null;
+            if (lbl != null && !lbl.equals(colNames[c])) {
+                o.put("label", lbl);
+            }
             o.put("type", colTypes[c]);
             colsJson.add(o);
         }
@@ -378,21 +372,11 @@ public class SandboxImportService {
             }
             String[] headers = rows.get(0);
             int colCount = headers.length;
-            String[] colNames = new String[colCount];
-            Set<String> seen = new HashSet<>();
+            String[] colNames = sanitizeColumns(headers);
+            String[] colLabels = new String[colCount];
             for (int i = 0; i < colCount; i++) {
                 String h = (headers[i] == null) ? "" : headers[i].trim();
-                if (h.isEmpty()) {
-                    h = "col" + (i + 1);
-                }
-                if (!IDENT_PATTERN.matcher(h).matches()) {
-                    throw new BizException("列名非法（仅英文/数字/下划线，首字符非数字）：" + headers[i]);
-                }
-                String lc = h.toLowerCase();
-                if (!seen.add(lc)) {
-                    throw new BizException("存在重复列名：" + lc);
-                }
-                colNames[i] = lc;
+                colLabels[i] = h.isEmpty() ? ("col" + (i + 1)) : h;
             }
             String[] colTypes = new String[colCount];
             for (int c = 0; c < colCount; c++) {
@@ -410,7 +394,7 @@ public class SandboxImportService {
                 colTypes[c] = inferType(samples);
             }
             List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
-            JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "upload", original);
+            JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "upload", original, colLabels);
             auditService.logSuccess(SandboxAuditService.OP_IMPORT_FILE, res.getString("tableName"), "ui",
                     Map.of("file", file.getOriginalFilename(), "db", db.getName(), "rowCount", res.getInteger("rowCount"),
                             "columns", res.getJSONArray("columns")));

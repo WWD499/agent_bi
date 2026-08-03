@@ -295,7 +295,7 @@
             <el-option
               v-for="c in columnOptions"
               :key="c.columnName"
-              :label="c.remarks ? c.columnName + '（' + c.remarks + '）' : c.columnName"
+              :label="(c.label || c.remarks) ? c.columnName + '（' + (c.label || c.remarks) + '）' : c.columnName"
               :value="c.columnName"
             />
           </el-select>
@@ -308,7 +308,7 @@
                 <el-option
                   v-for="c in columnOptions"
                   :key="c.columnName"
-                  :label="c.remarks ? c.columnName + '（' + c.remarks + '）' : c.columnName"
+                  :label="(c.label || c.remarks) ? c.columnName + '（' + (c.label || c.remarks) + '）' : c.columnName"
                   :value="c.columnName"
                 />
               </el-select>
@@ -328,7 +328,7 @@
 
         <el-form-item v-if="form.chartType !== 'stat'" label="排序字段">
           <el-select v-model="form.config.orderBy" clearable placeholder="可选，按某字段排序" style="width: 55%" :loading="loadingCols">
-            <el-option v-for="c in columnOptions" :key="c.columnName" :label="c.columnName" :value="c.columnName" />
+            <el-option v-for="c in columnOptions" :key="c.columnName" :label="c.label || c.remarks || c.columnName" :value="c.columnName" />
           </el-select>
           <el-select v-model="form.config.orderDir" style="width: 40%; margin-left: 5%">
             <el-option label="升序 ASC" value="ASC" />

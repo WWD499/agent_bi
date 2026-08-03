@@ -55,6 +55,9 @@ public class SandboxListColumnsTool implements AgentTool {
             for (DbColumnVo c : cols) {
                 JSONObject o = new JSONObject();
                 o.put("columnName", c.getColumnName());
+                if (c.getLabel() != null) {
+                    o.put("label", c.getLabel());
+                }
                 o.put("dataType", c.getDataType());
                 arr.add(o);
             }

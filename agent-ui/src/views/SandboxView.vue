@@ -161,11 +161,11 @@
           </div>
           <div v-if="columns.length" class="sb-cols">
             <el-tag v-for="c in columns" :key="c.columnName" class="sb-col" type="info" effect="plain">
-              {{ c.columnName }} <em>{{ c.dataType }}</em>
+              {{ c.label || c.columnName }} <em>{{ c.dataType }}</em>
             </el-tag>
           </div>
           <el-table v-if="previewData.length" :data="previewData" size="small" max-height="320" border>
-            <el-table-column v-for="col in previewColumns" :key="col" :prop="col" :label="col" sortable />
+            <el-table-column v-for="col in previewColumns" :key="col" :prop="col" :label="colLabelOf(col)" sortable />
           </el-table>
           <div v-else class="sb-empty">暂无数据预览</div>
         </div>
@@ -388,6 +388,12 @@ async function selectTable(physicalName, dbId) {
   } catch (e) {
     // 错误已由 http 拦截器统一提示
   }
+}
+
+/** 预览数据表头：优先显示中文列标签（label），回退物理列名 */
+function colLabelOf(name) {
+  const found = columns.value.find((c) => c.columnName === name)
+  return found && found.label ? found.label : name
 }
 
 async function doImport() {

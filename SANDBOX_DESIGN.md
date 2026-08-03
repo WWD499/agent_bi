@@ -59,7 +59,7 @@
 | `== 0` | 全部沙箱（`sandbox` schema 下所有库） |
 | `< 0` | 具体沙箱库，`dbId = -datasourceId` |
 
-- `BiAgentService` 解码：负 id → `sandboxDbId = -id`，传给 4 个 `Sandbox*Tool`；
+- `BiAgentService` 解码：负 id → `sandboxDbId = -id`，传给 5 个沙箱写工具 `Sandbox*Tool`；
   `0` → `sandboxDbId = null`（全部沙箱）。
 - NL2SQL / `list_tables` 按 `sandboxDbId` 收敛作用域（仅暴露该库表结构）。
 - 前端 `ChatView` 下拉：除业务源外，追加
@@ -103,5 +103,5 @@
 
 - 表短名、库 dbKey 当前规范化为 ASCII 标识符；库展示名可中文。后续可做中文友好名 + 拼音/哈希 key。
 - 多用户（`owner`）仅留字段，未接鉴权隔离。
-- **M2（写工具）已落地**：Agent 沙箱写工具 `SandboxCreateTableTool` / `SandboxMaterializeTool` / `SandboxDropTableTool` 均已接入 `requiresConfirmation=true` 确认循环（`AgentSession` 状态机 + `AgentChatController /confirm` 端点）。
+- **M2（写工具）已落地**：Agent 沙箱写工具 `SandboxCreateTableTool`(建表) / `SandboxUpdateTableTool`(改名·改表) / `SandboxImportDataTool`(数据源导入) / `SandboxMaterializeTool`(CTAS 落表·物化视图) / `SandboxDropTableTool`(删表) 均已接入 `requiresConfirmation=true` 确认循环（`AgentSession` 状态机 + `AgentChatController /confirm` 端点）；工具执行失败时可进入**自我修正循环（最多 3 次）**自动调整参数重试，仍未成功则向用户报告错误。
 - **M3（Excel 上传 / 审计）已落地**：`SandboxImportService.importFromFile`（POI + commons-csv 解析）支持 .csv/.xlsx/.xls 上传导入；`SandboxAuditService` + `bi_sandbox_audit` 表对全部导入 / 写表 / 删库操作留痕；前端「数据沙箱」页提供上传入口与审计日志抽屉。

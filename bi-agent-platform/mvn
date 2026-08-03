@@ -1,0 +1,97 @@
+#!/bin/sh
+# Maven launcher wrapper for Git Bash / WSL on Windows.
+# Bypasses the broken MAVEN_HOME env var + MSYS /d/ path-conversion that
+# breaks the stock `mvn` shell script (ClassNotFoundException: plexus.classworlds).
+# Root cause: Git Bash mangles `/d/Maven/...` classpaths before the Windows-native
+# `java.exe` sees them; using `D:/...` slash style + explicit -Dmaven.home works.
+# Usage:  bash mvn <goals>   (run from the project dir that holds pom.xml)
+#
+# This wrapper auto-detects whether it runs under Git Bash (/c,/d mounts) or
+# WSL (/mnt/c,/mnt/d mounts) and locates java accordingly. Maven's own paths use
+# the Windows-native `D:/...` form because we always launch the Windows JVM
+# (java.exe), which resolves `D:/...` directly regardless of the shell.
+
+MAVEN_BOOT="D:/Maven/apache-maven-3.9.11/boot/plexus-classworlds-2.9.0.jar"
+MAVEN_HOME="D:/Maven/apache-maven-3.9.11"
+
+# --- detect shell environment: wsl vs gitbash vs other ---
+if [ -d /mnt/c ]; then
+  ENV="wsl"
+elif [ -d /c ]; then
+  ENV="gitbash"
+else
+  ENV="unknown"
+fi
+
+# --- project dir: Windows-style path (Maven needs it on the Windows JVM) ---
+if [ "$ENV" = "wsl" ]; then
+  PROJECT_DIR="$(wslpath -w "$PWD" 2>/dev/null || pwd)"
+elif [ "$ENV" = "gitbash" ]; then
+  PROJECT_DIR="$(cygpath -w "$PWD" 2>/dev/null || pwd -W 2>/dev/null || pwd)"
+else
+  PROJECT_DIR="$(pwd)"
+fi
+
+# --- locate java: PATH -> env-specific candidates -> error ---
+JAVA_BIN=""
+if command -v java >/dev/null 2>&1; then
+  JAVA_BIN="java"
+else
+  case "$ENV" in
+    wsl)
+      CANDIDATES="/mnt/c/Program Files/Common Files/Oracle/Java/javapath/java.exe \
+/mnt/c/Program Files/Java/jdk-21/bin/java.exe \
+/mnt/d/Program Files/Java/jdk-21/bin/java.exe"
+      ;;
+    gitbash)
+      CANDIDATES="/c/Program Files/Common Files/Oracle/Java/javapath/java.exe \
+/c/Program Files/Java/jdk-21/bin/java.exe \
+/d/Program Files/Java/jdk-21/bin/java.exe"
+      ;;
+    *)
+      CANDIDATES="/c/Program Files/Common Files/Oracle/Java/javapath/java.exe \
+/mnt/c/Program Files/Common Files/Oracle/Java/javapath/java.exe"
+      ;;
+  esac
+  for c in $CANDIDATES; do
+    if [ -f "$c" ]; then
+      JAVA_BIN="$c"
+      break
+    fi
+  done
+fi
+
+if [ -z "$JAVA_BIN" ]; then
+  echo "ERROR: java not found." >&2
+  echo "  Set JAVA_HOME, or add java to PATH, or install a JDK 21 (javapath / C:/Program Files/Java/jdk-21)." >&2
+  exit 1
+fi
+
+# --- WSL: reuse the Windows Maven local repo (~/.m2) so deps aren't re-downloaded ---
+REPO_LOCAL=""
+if [ "$ENV" = "wsl" ] && [ -n "$USERPROFILE" ]; then
+  win_home="$(wslpath "$USERPROFILE" 2>/dev/null)"
+  if [ -n "$win_home" ] && [ -d "$win_home/.m2" ]; then
+    REPO_LOCAL="$(wslpath -w "$win_home/.m2" 2>/dev/null)"
+  fi
+fi
+
+EXTRA_OPTS=""
+if [ -n "$REPO_LOCAL" ]; then
+  EXTRA_OPTS="-Dmaven.repo.local=$REPO_LOCAL"
+fi
+
+if [ -n "$MVN_DEBUG" ]; then
+  echo "[mvn-wrapper] ENV=$ENV" >&2
+  echo "[mvn-wrapper] JAVA_BIN=$JAVA_BIN" >&2
+  echo "[mvn-wrapper] PROJECT_DIR=$PROJECT_DIR" >&2
+  echo "[mvn-wrapper] REPO_LOCAL=$REPO_LOCAL" >&2
+fi
+
+exec "$JAVA_BIN" \
+  -classpath "$MAVEN_BOOT" \
+  -Dclassworlds.conf="$MAVEN_HOME/bin/m2.conf" \
+  -Dmaven.home="$MAVEN_HOME" \
+  -Dmaven.multiModuleProjectDirectory="$PROJECT_DIR" \
+  $EXTRA_OPTS \
+  org.codehaus.plexus.classworlds.launcher.Launcher "$@"
