@@ -9,6 +9,8 @@ import DatabaseView from '@/views/DatabaseView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import OcrView from '@/views/OcrView.vue'
 import SandboxView from '@/views/SandboxView.vue'
+import QueryHistoryView from '@/views/QueryHistoryView.vue'
+import NotificationView from '@/views/NotificationView.vue'
 
 const routes = [
   { path: '/login', name: 'login', component: LoginView },
@@ -27,7 +29,9 @@ const routes = [
       { path: 'database', name: 'database', component: DatabaseView, meta: { requiresAuth: true } },
       { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { requiresAuth: true } },
       { path: 'ocr', name: 'ocr', component: OcrView, meta: { requiresAuth: true } },
-      { path: 'sandbox', name: 'sandbox', component: SandboxView, meta: { requiresAuth: true } }
+      { path: 'sandbox', name: 'sandbox', component: SandboxView, meta: { requiresAuth: true } },
+      { path: 'query-history', name: 'queryHistory', component: QueryHistoryView, meta: { requiresAuth: true } },
+      { path: 'notification', name: 'notification', component: NotificationView, meta: { requiresAuth: true } }
     ]
   },
   { path: '/:pathMatch(.*)*', redirect: '/' }

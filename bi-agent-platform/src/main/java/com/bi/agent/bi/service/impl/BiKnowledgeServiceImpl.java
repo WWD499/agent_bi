@@ -90,7 +90,7 @@ public class BiKnowledgeServiceImpl implements IBiKnowledgeService {
             try {
                 embeddings = embedTexts(chunks);
             } catch (Exception e) {
-                log.warn("向量化失败，将跳过向量存储：{}", e.getMessage());
+                log.error("向量化失败，将跳过向量存储", e);
             }
         }
 
@@ -157,7 +157,7 @@ public class BiKnowledgeServiceImpl implements IBiKnowledgeService {
                 List<float[]> embeddings = embedTexts(Collections.singletonList(knowledge.getContent()));
                 knowledge.setContentVector(floatArrayToPgVector(embeddings.get(0)));
             } catch (Exception e) {
-                log.warn("向量化失败，将保持原向量：{}", e.getMessage());
+                log.error("向量化失败，将保持原向量", e);
             }
         }
         return knowledgeMapper.updateBiKnowledge(knowledge);
@@ -193,7 +193,7 @@ public class BiKnowledgeServiceImpl implements IBiKnowledgeService {
                     return vectorResults;
                 }
             } catch (Exception e) {
-                log.warn("向量相似度检索失败，转关键词兜底：{}", e.getMessage());
+                log.error("向量相似度检索失败，转关键词兜底", e);
             }
         }
 
@@ -248,7 +248,7 @@ public class BiKnowledgeServiceImpl implements IBiKnowledgeService {
         try {
             return knowledgeMapper.searchByKeyword(terms, topK, domain);
         } catch (Exception e) {
-            log.warn("关键词检索失败：{}", e.getMessage());
+            log.error("关键词检索失败", e);
             return new ArrayList<>();
         }
     }

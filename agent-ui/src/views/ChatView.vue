@@ -108,7 +108,7 @@
                 <span class="sw-label">允许写库</span>
               </span>
             </el-tooltip>
-            <el-tooltip content="开启后写操作直接执行、不再弹确认框（需先开启允许写库，谨慎使用）" placement="top">
+            <el-tooltip content="写操作确认已由服务端强制护栏接管：默认每次写操作都会弹确认框（安全默认）。如需自主执行模式，请在服务端开启 agent.sandbox.trusted-mode=true。本开关仅作“请求”，服务端未开启 trusted-mode 时仍会要求确认。" placement="top">
               <span class="sw-item" :class="{ disabled: !isSandbox || !allowWrite }">
                 <el-switch
                   v-model="skipConfirm"
@@ -489,12 +489,10 @@ onMounted(async () => {
       localStorage.removeItem(LS_DS)
     }
   }
-  // 刷新后恢复双开关状态（仅沙箱模式有意义；主开关关时子开关强制关）
+  // 刷新后恢复主开关（允许写库）。注意：子开关 skipConfirm 不再由前端记忆/默认开启——
+  // 写操作确认由服务端强制护栏接管（agent.sandbox.trusted-mode），客户端无法自行绕过。
   if (localStorage.getItem(LS_WRITE) === '1') {
     allowWrite.value = true
-    if (localStorage.getItem(LS_SKIP) === '1') {
-      skipConfirm.value = true
-    }
   }
   // 拉取沙箱数据源列表（仅沙箱库可选，源数据库不在此出现）
   try {

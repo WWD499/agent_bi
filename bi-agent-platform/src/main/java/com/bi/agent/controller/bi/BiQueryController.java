@@ -1,6 +1,9 @@
 package com.bi.agent.controller.bi;
 
+import cn.dev33.satoken.stp.StpUtil;
+import com.bi.agent.bi.domain.BiQueryHistory;
 import com.bi.agent.bi.service.BiQueryService;
+import com.bi.agent.bi.service.IBiQueryHistoryService;
 import com.bi.agent.bi.vo.BiQueryReq;
 import com.bi.agent.bi.vo.QueryResultVo;
 import com.bi.agent.common.Result;
@@ -32,6 +35,9 @@ public class BiQueryController {
     @Autowired
     private BiQueryService biQueryService;
 
+    @Autowired
+    private IBiQueryHistoryService queryHistoryService;
+
     /**
      * 自然语言转 SQL 并取数 + 选图。
      *
@@ -47,11 +53,45 @@ public class BiQueryController {
             return Result.fail(400, "datasourceId 不能为空");
         }
 
-        log.info("收到 NL2SQL 请求：dsId={}, query={}", req.getDatasourceId(), req.getQuery());
-        QueryResultVo vo = biQueryService.naturalLanguageQuery(
-                req.getQuery().trim(),
-                req.getDatasourceId(),
-                req.getTableName());
-        return Result.ok(vo);
+        String userId = String.valueOf(StpUtil.getLoginId());
+        long t0 = System.currentTimeMillis();
+        try {
+            log.info("收到 NL2SQL 请求：dsId={}, query={}", req.getDatasourceId(), req.getQuery());
+            QueryResultVo vo = biQueryService.naturalLanguageQuery(
+                    req.getQuery().trim(),
+                    req.getDatasourceId(),
+                    req.getTableName());
+            saveHistory(userId, req, vo.getSql(), vo.getRowCount(),
+                    System.currentTimeMillis() - t0, "success", null);
+            return Result.ok(vo);
+        } catch (Exception e) {
+            saveHistory(userId, req, null, 0,
+                    System.currentTimeMillis() - t0, "failed", e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * 落库查询历史（自身任何异常都绝不影响 NL2SQL 主流程）。
+     */
+    private void saveHistory(String userId, BiQueryReq req, String sql, Integer rowCount,
+                             long durationMs, String status, String errorMsg) {
+        try {
+            BiQueryHistory h = new BiQueryHistory();
+            h.setUserId(userId);
+            h.setDatasourceId(req.getDatasourceId());
+            h.setQuery(req.getQuery().trim());
+            h.setSql(sql);
+            h.setRowCount(rowCount);
+            h.setDurationMs(durationMs);
+            h.setStatus(status);
+            if (errorMsg != null && errorMsg.length() > 1000) {
+                errorMsg = errorMsg.substring(0, 1000);
+            }
+            h.setErrorMsg(errorMsg);
+            queryHistoryService.save(h);
+        } catch (Exception ex) {
+            log.warn("查询历史落库失败（已忽略）", ex);
+        }
     }
 }

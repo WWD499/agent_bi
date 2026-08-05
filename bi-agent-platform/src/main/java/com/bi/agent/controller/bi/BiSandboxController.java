@@ -78,7 +78,7 @@ public class BiSandboxController {
             out.put("name", db.getName());
             return Result.ok(out);
         } catch (Exception e) {
-            log.warn("沙箱库创建失败：{}", e.getMessage());
+            log.error("沙箱库创建失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -88,7 +88,7 @@ public class BiSandboxController {
         try {
             return Result.ok(sandboxQueryService.listSandboxDbs());
         } catch (Exception e) {
-            log.warn("沙箱库列表查询失败：{}", e.getMessage());
+            log.error("沙箱库列表查询失败", e);
             return Result.fail(500, e.getMessage());
         }
     }
@@ -99,7 +99,7 @@ public class BiSandboxController {
             sandboxImportService.dropSandboxDb(id);
             return Result.ok();
         } catch (Exception e) {
-            log.warn("沙箱库删除失败：{}", e.getMessage());
+            log.error("沙箱库删除失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -116,7 +116,7 @@ public class BiSandboxController {
             JSONObject res = sandboxImportService.importFromText(rawText, tableName, separator, dbId);
             return Result.ok(res);
         } catch (Exception e) {
-            log.warn("沙箱导入失败：{}", e.getMessage());
+            log.error("沙箱导入失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -131,7 +131,7 @@ public class BiSandboxController {
             List<JSONObject> res = sandboxImportService.importFromDatasource(req.getDatasourceId(), req.getTables(), req.getDbId());
             return Result.ok(res);
         } catch (Exception e) {
-            log.warn("数据源导入沙箱失败：{}", e.getMessage());
+            log.error("数据源导入沙箱失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -149,7 +149,7 @@ public class BiSandboxController {
             JSONObject res = sandboxImportService.importFromFile(file, tableName, dbId);
             return Result.ok(res);
         } catch (Exception e) {
-            log.warn("文件导入沙箱失败：{}", e.getMessage());
+            log.error("文件导入沙箱失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -163,7 +163,7 @@ public class BiSandboxController {
         try {
             return Result.ok(sandboxAuditService.listRecent(limit));
         } catch (Exception e) {
-            log.warn("沙箱审计查询失败：{}", e.getMessage());
+            log.error("沙箱审计查询失败", e);
             return Result.fail(500, e.getMessage());
         }
     }
@@ -204,27 +204,29 @@ public class BiSandboxController {
         try {
             return Result.ok(sandboxQueryService.listSandboxTables(dbId));
         } catch (Exception e) {
-            log.warn("沙箱列表查询失败：{}", e.getMessage());
+            log.error("沙箱列表查询失败", e);
             return Result.fail(500, e.getMessage());
         }
     }
 
     @GetMapping("/tables/{name}/columns")
-    public Result<List<DbColumnVo>> listColumns(@PathVariable String name) {
+    public Result<List<DbColumnVo>> listColumns(@PathVariable String name,
+                                                 @RequestParam(required = false) Long dbId) {
         if (name == null || !IDENT_PATTERN.matcher(name).matches()) {
             return Result.fail(400, "非法物理表名：" + name);
         }
         try {
-            return Result.ok(sandboxQueryService.listSandboxColumns(name));
+            return Result.ok(sandboxQueryService.listSandboxColumns(dbId, name));
         } catch (Exception e) {
-            log.warn("沙箱列查询失败：{}", e.getMessage());
+            log.error("沙箱列查询失败", e);
             return Result.fail(500, e.getMessage());
         }
     }
 
     @GetMapping("/tables/{name}/data")
     public Result<QueryResultVo> previewData(@PathVariable String name,
-                                             @RequestParam(defaultValue = "100") int limit) {
+                                             @RequestParam(defaultValue = "100") int limit,
+                                             @RequestParam(required = false) Long dbId) {
         if (name == null || !IDENT_PATTERN.matcher(name).matches()) {
             return Result.fail(400, "非法物理表名：" + name);
         }
@@ -232,7 +234,7 @@ public class BiSandboxController {
             limit = 100;
         }
         try {
-            List<DbColumnVo> columns = sandboxQueryService.listSandboxColumns(name);
+            List<DbColumnVo> columns = sandboxQueryService.listSandboxColumns(dbId, name);
             String orderCol = resolveDefaultOrderColumn(columns);
             String sql = "SELECT * FROM " + SandboxQueryService.SANDBOX_SCHEMA + ".\"" + name + "\"";
             if (orderCol != null) {
@@ -241,7 +243,7 @@ public class BiSandboxController {
             sql += " LIMIT " + limit;
             return Result.ok(sandboxQueryService.runSandboxReadOnlySql(sql));
         } catch (Exception e) {
-            log.warn("沙箱数据预览失败：{}", e.getMessage());
+            log.error("沙箱数据预览失败", e);
             return Result.fail(500, e.getMessage());
         }
     }
@@ -294,7 +296,7 @@ public class BiSandboxController {
             String sql = body.getString("sql");
             return Result.ok(sandboxQueryService.runSandboxReadOnlySql(sql));
         } catch (Exception e) {
-            log.warn("沙箱 SQL 执行失败：{}", e.getMessage());
+            log.error("沙箱 SQL 执行失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -308,7 +310,7 @@ public class BiSandboxController {
             sandboxImportService.dropSandboxTable(name);
             return Result.ok();
         } catch (Exception e) {
-            log.warn("沙箱表删除失败：{}", e.getMessage());
+            log.error("沙箱表删除失败", e);
             return Result.fail(400, e.getMessage());
         }
     }
@@ -327,7 +329,7 @@ public class BiSandboxController {
             sandboxQueryService.renameSandboxTableDisplay(name, displayName);
             return Result.ok();
         } catch (Exception e) {
-            log.warn("沙箱表显示名修改失败：{}", e.getMessage());
+            log.error("沙箱表显示名修改失败", e);
             return Result.fail(400, e.getMessage());
         }
     }

@@ -99,7 +99,14 @@ public class SandboxImportService {
             throw new BizException("表名不能为空");
         }
         BiSandboxDb db = resolveDb(dbId);
-        String shortName = sanitizeIdentifier(tableName);
+        String rawTableName = tableName.trim();
+        String shortName = sanitizeIdentifier(rawTableName);
+        // 中文/非法表名无法生成有意义英文短名时，自动生成可读回落名（tbl_<随机>），
+        // 避免产生 __ 等退化脏表；原始（中文）表名保留为显示名。
+        String displayName = rawTableName;
+        if (!isValidShortName(shortName)) {
+            shortName = "tbl_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        }
         // 物理名 == 短名，全沙箱短名全局唯一：任一库已存在同名表则拒绝
         if (sandboxMapper.countByTableName(shortName) > 0) {
             throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请先删除或换名后再导入");
@@ -149,7 +156,7 @@ public class SandboxImportService {
 
         // 4. 组装数据行（去掉表头行）并共用 writeSandboxTable 建表写入
         List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
-        JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "paste", null, colLabels);
+        JSONObject res = writeSandboxTable(db.getId(), shortName, displayName, colNames, colTypes, dataRows, "paste", null, colLabels);
         auditService.logSuccess(SandboxAuditService.OP_IMPORT_TEXT, res.getString("tableName"), "ui",
                 Map.of("db", db.getName(), "rowCount", res.getInteger("rowCount"),
                         "columns", res.getJSONArray("columns")));
@@ -245,7 +252,7 @@ public class SandboxImportService {
 
             String remark = ds.getName() + "." + src
                     + (allRows.size() >= MAX_IMPORT_ROWS ? " (截断至" + MAX_IMPORT_ROWS + "行)" : "");
-            JSONObject res = writeSandboxTable(db.getId(), target, colNames, colTypes, allRows, "datasource", remark, rawCols);
+            JSONObject res = writeSandboxTable(db.getId(), target, src, colNames, colTypes, allRows, "datasource", remark, rawCols);
             results.add(res);
             auditService.logSuccess(SandboxAuditService.OP_IMPORT_DATASOURCE, res.getString("tableName"), "ui",
                     Map.of("source", ds.getName() + "." + src, "db", db.getName(), "rowCount", allRows.size()));
@@ -267,7 +274,7 @@ public class SandboxImportService {
      * @param remark    来源备注（如 数据源名.源表名）
      * @return 导入摘要 JSONObject
      */
-    private JSONObject writeSandboxTable(Long dbId, String shortName, String[] colNames, String[] colTypes,
+    private JSONObject writeSandboxTable(Long dbId, String shortName, String displayName, String[] colNames, String[] colTypes,
                                         List<String[]> dataRows, String sourceType, String remark, String[] colLabels) {
         String physicalName = shortName; // 物理名即短名，不再拼接库前缀
         // 1. 动态建表
@@ -303,8 +310,8 @@ public class SandboxImportService {
         rec.setDbId(dbId);
         rec.setTableName(shortName);
         rec.setPhysicalName(physicalName);
-        // 默认显示名 = 短名（如 emp），用户后续可在前端改为中文名（如 员工表）
-        rec.setDisplayName(shortName);
+        // 显示名优先用调用方传入的原始名（可中文，如 员工表）；为空则回落短名
+        rec.setDisplayName(displayName != null && !displayName.isBlank() ? displayName : shortName);
         rec.setOwner(null);
         JSONArray colsJson = new JSONArray();
         for (int c = 0; c < colNames.length; c++) {
@@ -365,7 +372,14 @@ public class SandboxImportService {
             }
             // 规范化表名 + 冲突检查（与 importFromText 同路径）
             BiSandboxDb db = resolveDb(dbId);
-            String shortName = sanitizeIdentifier(tableName);
+            String rawTableName = (tableName == null ? "" : tableName.trim());
+            String shortName = sanitizeIdentifier(rawTableName);
+            // 中文/非法表名无法生成有意义英文短名时，自动生成可读回落名（tbl_<随机>），
+            // 避免产生 __ 等退化脏表；原始（中文）表名保留为显示名。
+            String displayName = rawTableName;
+            if (!isValidShortName(shortName)) {
+                shortName = "tbl_" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+            }
             // 物理名 == 短名，全沙箱短名全局唯一
             if (sandboxMapper.countByTableName(shortName) > 0) {
                 throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请先删除或换名后再导入");
@@ -394,7 +408,7 @@ public class SandboxImportService {
                 colTypes[c] = inferType(samples);
             }
             List<String[]> dataRows = new ArrayList<>(rows.subList(1, rows.size()));
-            JSONObject res = writeSandboxTable(db.getId(), shortName, colNames, colTypes, dataRows, "upload", original, colLabels);
+            JSONObject res = writeSandboxTable(db.getId(), shortName, displayName, colNames, colTypes, dataRows, "upload", original, colLabels);
             auditService.logSuccess(SandboxAuditService.OP_IMPORT_FILE, res.getString("tableName"), "ui",
                     Map.of("file", file.getOriginalFilename(), "db", db.getName(), "rowCount", res.getInteger("rowCount"),
                             "columns", res.getJSONArray("columns")));
@@ -696,7 +710,7 @@ public class SandboxImportService {
             if (!all.isEmpty()) {
                 return all.get(0);
             }
-            throw new BizException("沙箱尚未初始化（缺少默认库），请先执行 sandbox_init.sql");
+            throw new BizException("沙箱尚未初始化（缺少默认库），请重启应用以自动初始化沙箱元数据");
         }
         BiSandboxDb db = sandboxMapper.selectDbById(dbId);
         if (db == null) {
@@ -802,6 +816,15 @@ public class SandboxImportService {
             r = "t_" + r;
         }
         return r;
+    }
+
+    /** 表短名是否合法：去掉下划线后须仍含 >=2 个字母/数字，排除 __ / _a / 单字符 等退化名 */
+    private static boolean isValidShortName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        String core = name.replace("_", "");
+        return core.length() >= 2;
     }
 
     /**

@@ -6,6 +6,7 @@ import com.bi.agent.bi.domain.BiAlertRule;
 import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.enums.AlertLevel;
 import com.bi.agent.bi.enums.AlertStatus;
+import com.bi.agent.bi.enums.EnableFlag;
 import com.bi.agent.bi.mapper.BiAlertRecordMapper;
 import com.bi.agent.bi.mapper.BiAlertRuleMapper;
 import com.bi.agent.bi.service.IBiAlertNotifyService;
@@ -72,9 +73,9 @@ public class BiAlertRuleServiceImpl implements IBiAlertRuleService {
 
     @Override
     public int insertBiAlertRule(BiAlertRule rule) {
-        if (rule.getStatus() == null) rule.setStatus(1);
+        if (rule.getStatus() == null) rule.setStatus(EnableFlag.ENABLED.getCode());
         if (rule.getCheckInterval() == null) rule.setCheckInterval(60);
-        if (rule.getAnalysisEnabled() == null) rule.setAnalysisEnabled(1);
+        if (rule.getAnalysisEnabled() == null) rule.setAnalysisEnabled(EnableFlag.ENABLED.getCode());
         return alertRuleMapper.insertBiAlertRule(rule);
     }
 
@@ -142,7 +143,7 @@ public class BiAlertRuleServiceImpl implements IBiAlertRuleService {
                     // 6. 创建预警记录
                     BiAlertRecord record = createAlertRecord(rule, actualValue, now);
                     // 7. AI 分析原因（如果启用）
-                    if (rule.getAnalysisEnabled() != null && rule.getAnalysisEnabled() == 1
+                    if (rule.getAnalysisEnabled() != null && rule.getAnalysisEnabled() == EnableFlag.ENABLED.getCode()
                             && llmService != null && promptBuilder != null) {
                         try {
                             String analysis = analyzeAnomaly(rule, actualValue);

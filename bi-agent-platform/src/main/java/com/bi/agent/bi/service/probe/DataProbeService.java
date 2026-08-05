@@ -13,8 +13,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.sql.*;
-import java.text.SimpleDateFormat;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -116,7 +117,7 @@ public class DataProbeService {
         DataProfile profile = new DataProfile();
         profile.setDatasourceId(ds.getId());
         profile.setTableName(tableName);
-        profile.setProbedAt(new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss").format(new java.util.Date()));
+        profile.setProbedAt(LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")));
         profile.setProbed(false);
 
         try {
@@ -332,17 +333,20 @@ public class DataProbeService {
         return t.contains("CHAR") || t.contains("TEXT") || t.contains("VARCHAR") || t.contains("CLOB");
     }
 
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+
     /** 把 JDBC 日期对象格式化为 yyyy-MM-dd；其它类型直接 toString */
     private String formatDate(Object obj) {
         if (obj == null) return null;
         if (obj instanceof java.sql.Timestamp) {
-            return new SimpleDateFormat("yyyy-MM-dd").format((java.sql.Timestamp) obj);
+            return ((java.sql.Timestamp) obj).toLocalDateTime().format(DATE_FMT);
         }
         if (obj instanceof java.sql.Date) {
-            return new SimpleDateFormat("yyyy-MM-dd").format((java.sql.Date) obj);
+            return ((java.sql.Date) obj).toLocalDate().format(DATE_FMT);
         }
         if (obj instanceof java.util.Date) {
-            return new SimpleDateFormat("yyyy-MM-dd").format((java.util.Date) obj);
+            return ((java.util.Date) obj).toInstant()
+                    .atZone(java.time.ZoneId.systemDefault()).toLocalDate().format(DATE_FMT);
         }
         return String.valueOf(obj);
     }

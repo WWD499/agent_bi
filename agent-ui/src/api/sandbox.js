@@ -40,14 +40,17 @@ export function listSandboxTables(dbId) {
   return http.get('/bi/sandbox/tables', { params }).then((r) => r.data.data)
 }
 
-// 列出某物理表字段：GET /bi/sandbox/tables/{physicalName}/columns
-export function getSandboxColumns(physicalName) {
-  return http.get(`/bi/sandbox/tables/${physicalName}/columns`).then((r) => r.data.data)
+// 列出某物理表字段：GET /bi/sandbox/tables/{physicalName}/columns?dbId=（按库作用域隔离解析）
+export function getSandboxColumns(physicalName, dbId) {
+  const params = dbId != null ? { dbId } : {}
+  return http.get(`/bi/sandbox/tables/${physicalName}/columns`, { params }).then((r) => r.data.data)
 }
 
-// 预览某物理表前 N 行：GET /bi/sandbox/tables/{physicalName}/data?limit=100
-export function getSandboxData(physicalName, limit = 100) {
-  return http.get(`/bi/sandbox/tables/${physicalName}/data`, { params: { limit } }).then((r) => r.data.data)
+// 预览某物理表前 N 行：GET /bi/sandbox/tables/{physicalName}/data?limit=100&dbId=（按库作用域隔离解析）
+export function getSandboxData(physicalName, limit = 100, dbId) {
+  const params = { limit }
+  if (dbId != null) params.dbId = dbId
+  return http.get(`/bi/sandbox/tables/${physicalName}/data`, { params }).then((r) => r.data.data)
 }
 
 // 在沙箱内执行只读 SQL：POST /bi/sandbox/execute

@@ -42,21 +42,17 @@ agent_bi 以**单 Agent 推理引擎**为核心：用户用自然语言提问，
 ```
 agent_bi/
 ├── bi-agent-platform/        # 后端（Spring Boot 3.4.5 / Java 21）
-│   ├── sql/
-│   │   ├── agent_bi_init.sql     # 核心业务表初始化（预警 / 知识库 / 数据源等）
-│   │   ├── sandbox_init.sql      # 数据沙箱：sandbox schema + 元数据表 bi_sandbox_table
-│   │   └── verify.sql           # 初始化后自检
+│   ├── sql/verify.sql        # 初始化后自检（SELECT 校验，可选）
 │   ├── src/main/resources/
-│   │   ├── application.yml       # 主配置（已被 .gitignore 忽略，密钥不入库）
-│   │   └── sql/bi_dashboard.sql # BI 大屏表
-│   └── _seed_ds.sql            # 演示数据源种子（可选）
+│   │   ├── application.yml   # 主配置（已被 .gitignore 忽略，密钥不入库）
+│   │   ├── schema.sql        # 【单一可信源】建表 DDL（幂等 IF NOT EXISTS，spring.sql.init 启动时自动执行）
+│   │   └── data.sql          # 【单一可信源】种子数据（幂等，启动自动执行；取代原先散落的 SQL 脚本）
+│   └── pom.xml
 ├── agent-ui/                 # 前端（Vue 3.5 / Vite 6）
 ├── ocr-service/              # PaddleOCR 服务（Python FastAPI）
 │   ├── ocr_server.py
 │   ├── requirements.txt
 │   └── install_ocr.bat          # Windows 一键安装依赖（独立 venv）
-├── sql/
-│   └── bi_ocr_record.sql    # OCR 识别记录表
 ├── PLAN.md                  # 重构实施计划（架构决策依据）
 └── README.md
 ```
@@ -82,23 +78,21 @@ agent_bi/
 ### 5.1 准备中间件
 
 - 启动 PostgreSQL（启用 pgvector）、Redis；如需业务取数，准备 MySQL 8 业务库。
-- 创建系统库并初始化表：
+- 创建系统库并初始化表（建表/灌数已合并为**单一可信源**，应用启动时由 `spring.sql.init` **自动执行**，无需手动跑脚本）：
 
 ```sql
--- 1) 创建系统库（库名固定为 agent_bi）
+-- 1) 创建系统库（库名固定为 agent_bi；只需这一句，应用启动会自动建表 + 灌种子数据）
 CREATE DATABASE agent_bi;
-
--- 2) 按顺序执行建表脚本（在 agent_bi 库内）
-\i bi-agent-platform/sql/agent_bi_init.sql      -- 核心业务表
-\i bi-agent-platform/src/main/resources/sql/bi_dashboard.sql  -- BI 大屏表
-\i sql/bi_ocr_record.sql                        -- OCR 记录表
-\i bi-agent-platform/sql/sandbox_init.sql        -- 数据沙箱（sandbox schema + 元数据表）
--- 可选：演示数据源种子
-\i bi-agent-platform/_seed_ds.sql
 ```
 
-> PostgreSQL 命令行含中文注释的脚本易在 Windows 下出现 UTF-8 编码错误，建议先写入 `.sql` 文件，再用
-> `PGCLIENTENCODING=UTF8 psql -h localhost -p 5432 -U postgres -d agent_bi -f <文件>` 执行。
+> **数据库初始化已自动化**：`src/main/resources/schema.sql`（建表，全程 `IF NOT EXISTS`）
+> 与 `data.sql`（种子数据，`ON CONFLICT` / `WHERE NOT EXISTS` 幂等）会在应用启动时自动执行，
+> 对已有库安全 no-op，新表缺了自动补齐，不再出现“编译过、运行炸”的缺表问题。
+>
+> 若需离线/手动初始化（如 CI 预置或新环境），可改用单一可信源脚本：
+> `PGCLIENTENCODING=UTF8 psql -h localhost -p 5432 -U postgres -d agent_bi -f bi-agent-platform/src/main/resources/schema.sql`
+> 再执行 `... -f bi-agent-platform/src/main/resources/data.sql`（均幂等，可重跑）。
+> 手动方式仅用于特殊场景；正常启动应用即完成全部初始化。
 
 ### 5.2 配置后端
 

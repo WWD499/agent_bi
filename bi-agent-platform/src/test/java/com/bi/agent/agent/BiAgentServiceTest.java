@@ -10,14 +10,17 @@ import com.bi.agent.bi.service.SandboxQueryService;
 import com.bi.agent.bi.service.llm.LlmService;
 import com.bi.agent.bi.service.probe.DataProbeService;
 import com.bi.agent.bi.service.sql.ChartSelector;
+import com.bi.agent.agent.AgentSession;
 import com.bi.agent.agent.AgentSessionRegistry;
 import com.bi.agent.bi.domain.BiDatasource;
 import com.bi.agent.bi.vo.DbTableVo;
 import com.bi.agent.bi.vo.DataProfile;
 import com.bi.agent.bi.vo.QueryResultVo;
+import com.alibaba.fastjson2.JSON;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.InjectMocks;
@@ -27,12 +30,17 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.List;
 import java.util.concurrent.Executor;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -266,5 +274,150 @@ class BiAgentServiceTest {
         verify(queryService).runReadOnlySql(any(), anyString());
         verify(chartSelector).selectChart(anyList(), anyList(), anyString(), ArgumentMatchers.isNull());
         verify(emitter, atLeastOnce()).send(ArgumentMatchers.any(SseEmitter.SseEventBuilder.class));
+    }
+
+    // ============================ P1：确认流 + MAX_STEPS 边界 ============================
+
+    private static final String DASHBOARD_ARGS =
+            "{\"name\":\"销售大屏\",\"datasourceId\":0,\"widgets\":[{\"title\":\"t\",\"chartType\":\"bar\",\"sql\":\"SELECT 1\"}]}";
+
+    /** 拼一个「模型返回单个 tool_call」的 LLM 响应（arguments 为 JSON 字符串，需再转义一层） */
+    private String toolCall(String toolName, String argsJson) {
+        String argsStr = JSON.toJSONString(argsJson);
+        return "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":null,"
+                + "\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\","
+                + "\"function\":{\"name\":\"" + toolName + "\",\"arguments\":" + argsStr + "}}]}}]}";
+    }
+
+    /** 拼一个「模型直接返回最终文本」的 LLM 响应 */
+    private String finalText(String text) {
+        return "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"" + text + "\"}}]}";
+    }
+
+    /** 反射设置 BiAgentService.trustedMode（@Value 在单测中不会被 Spring 注入） */
+    private void setTrustedMode(boolean v) throws Exception {
+        var f = BiAgentService.class.getDeclaredField("trustedMode");
+        f.setAccessible(true);
+        f.set(service, v);
+    }
+
+    /** 轮询等待会话进入「等待确认」状态（避免主线程检查早于后台线程设状态造成竞态） */
+    private void waitForAwaitingConfirm(AgentSession s, long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            if (s.isAwaitingConfirm()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+    }
+
+    /**
+     * 【P0 护栏回归】trustedMode 默认 false 时，即使客户端传 skipConfirm=true，
+     * 写工具（create_dashboard 需确认）仍必须走确认流程——绝不能免确认直执行。
+     * 这里断言：会话进入了等待确认状态，且用户拒绝后写操作未被执行。
+     */
+    @Test
+    void skipConfirmIgnoredWhenTrustedModeFalse_writeToolBlocked() throws Exception {
+        String step1 = toolCall("create_dashboard", DASHBOARD_ARGS);
+        String step2 = finalText("已为你生成大屏（被拒绝分支后的最终答复）");
+        when(llmService.chatRaw(anyList(), anyString())).thenReturn(step1, step2);
+
+        // run 内部会阻塞在 awaitConfirmation，必须在后台线程跑，主线程来 resolve
+        Thread t = new Thread(() -> service.run("帮我创建销售大屏", "sess-p0", "u", null, emitter, false, true));
+        t.start();
+        ArgumentCaptor<AgentSession> cap = ArgumentCaptor.forClass(AgentSession.class);
+        verify(sessionRegistry, timeout(5000)).register(cap.capture());
+        AgentSession session = cap.getValue();
+        // 先等会话真正进入「等待确认」再断言/放行，避免检查早于状态设置造成竞态
+        waitForAwaitingConfirm(session, 5000);
+        assertTrue(session.isAwaitingConfirm(), "写工具未进入等待确认状态，P0 护栏可能已被绕过");
+        session.resolveConfirmation(false); // 模拟用户在对话框点「拒绝」
+        t.join(5000);
+
+        verify(dashboardService, never()).insertBiDashboard(any());
+    }
+
+    /**
+     * 服务端开启 trusted-mode 且客户端 skipConfirm=true 时，写工具应免确认直接执行。
+     * （这是护栏的「授权放行」分支，与上面的「拦截」分支成对。）
+     */
+    @Test
+    void trustedModeTrueAndSkipConfirmTrue_writeToolExecutesDirectly() throws Exception {
+        setTrustedMode(true);
+        try {
+            String step1 = toolCall("create_dashboard", DASHBOARD_ARGS);
+            String step2 = finalText("大屏已创建");
+            when(llmService.chatRaw(anyList(), anyString())).thenReturn(step1, step2);
+            when(dashboardService.insertBiDashboard(any())).thenReturn(1);
+
+            service.run("帮我创建销售大屏", "sess-trust", "u", null, emitter, false, true);
+
+            verify(dashboardService).insertBiDashboard(any());
+        } finally {
+            setTrustedMode(false);
+        }
+    }
+
+    /**
+     * 默认（trustedMode=false, skipConfirm=false）下，写工具请求确认且用户「同意」后应真正执行。
+     */
+    @Test
+    void confirmationApproved_writeToolExecutes() throws Exception {
+        String step1 = toolCall("create_dashboard", DASHBOARD_ARGS);
+        String step2 = finalText("大屏已创建");
+        when(llmService.chatRaw(anyList(), anyString())).thenReturn(step1, step2);
+        when(dashboardService.insertBiDashboard(any())).thenReturn(1);
+
+        Thread t = new Thread(() -> service.run("帮我创建销售大屏", "sess-approve", "u", null, emitter, false, false));
+        t.start();
+        ArgumentCaptor<AgentSession> cap = ArgumentCaptor.forClass(AgentSession.class);
+        verify(sessionRegistry, timeout(5000)).register(cap.capture());
+        AgentSession session = cap.getValue();
+        waitForAwaitingConfirm(session, 5000); // 等进入等待确认后再「同意」，否则 future 尚未创建、resolve 无效
+        session.resolveConfirmation(true); // 模拟用户「同意」
+        t.join(5000);
+
+        verify(dashboardService).insertBiDashboard(any());
+    }
+
+    /**
+     * 只读工具（requiresConfirmation=false）应直接执行，且不进入「等待确认」状态。
+     * 与上面的写工具确认流形成对照。
+     */
+    @Test
+    void readonlyToolExecutesWithoutEnteringConfirm() throws Exception {
+        String step1 = toolCall("list_tables", "{\"datasourceId\":1}");
+        String step2 = finalText("表清单如下");
+        when(llmService.chatRaw(anyList(), anyString())).thenReturn(step1, step2);
+        when(datasourceService.listTables(1L)).thenReturn(List.of(new DbTableVo()));
+
+        ArgumentCaptor<AgentSession> cap = ArgumentCaptor.forClass(AgentSession.class);
+        service.run("有哪些表", "sess-ro", "u", null, emitter, false, false);
+        verify(sessionRegistry).register(cap.capture());
+
+        assertFalse(cap.getValue().isAwaitingConfirm(), "只读工具不应进入等待确认状态");
+        verify(datasourceService).listTables(1L);
+    }
+
+    /**
+     * 【MAX_STEPS 边界】循环实际以常量 MAX_STEPS=15 为上界（AgentSession.MAX_TOOL_CALLS=8 未接入循环）。
+     * 连续 15 步都返回 tool_calls 时应恰好执行 15 次工具调用，第 16 次为无工具的兜底总结，不死循环。
+     * （已有 stepLimitInvokesFallbackSummary 只 loop 8 次，未触达真实边界，这里补齐。）
+     */
+    @Test
+    void maxStepsIsFifteen_invokesFallbackSummary() throws java.io.IOException {
+        String loopStep = toolCall("list_tables", "{\"datasourceId\":1}");
+        String fallback = finalText("已达步数上限，请拆分问题后重试。");
+        when(llmService.chatRaw(anyList(), anyString()))
+                .thenReturn(loopStep, loopStep, loopStep, loopStep, loopStep,
+                        loopStep, loopStep, loopStep, loopStep, loopStep,
+                        loopStep, loopStep, loopStep, loopStep, loopStep, fallback);
+        when(datasourceService.listTables(1L)).thenReturn(List.of(new DbTableVo()));
+
+        service.run("一个会触发无限工具调用的复杂问题", "sess-maxsteps", "u", null, emitter, false, false);
+
+        verify(datasourceService, times(15)).listTables(1L);
+        verify(llmService, times(16)).chatRaw(anyList(), any());
     }
 }

@@ -12,6 +12,7 @@ target/
 # Node (agent-ui)
 node_modules/
 dist/
+dist_verify/
 build/
 
 # OS

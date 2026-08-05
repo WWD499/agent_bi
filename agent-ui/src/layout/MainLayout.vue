@@ -18,9 +18,17 @@
           <el-icon><DataAnalysis /></el-icon>
           <span>NL2SQL 查询</span>
         </el-menu-item>
+        <el-menu-item index="/query-history">
+          <el-icon><Clock /></el-icon>
+          <span>查询历史</span>
+        </el-menu-item>
         <el-menu-item index="/alert">
           <el-icon><Warning /></el-icon>
           <span>预警中心</span>
+        </el-menu-item>
+        <el-menu-item index="/notification">
+          <el-icon><Bell /></el-icon>
+          <span>通知中心</span>
         </el-menu-item>
         <el-menu-item index="/knowledge">
           <el-icon><Collection /></el-icon>
@@ -49,6 +57,9 @@
         <div class="uinfo">
           <div class="uname">{{ auth.username || '用户' }}</div>
         </div>
+        <el-badge :value="unread" :hidden="unread === 0" :max="99">
+          <el-button text :icon="Bell" @click="goNotify" title="通知中心" />
+        </el-badge>
         <el-button text :icon="theme === 'dark' ? Sunny : Moon" @click="toggleTheme" title="切换主题" />
         <el-button text :icon="SwitchButton" @click="doLogout" title="退出登录" />
       </div>
@@ -61,10 +72,11 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatDotRound, DataAnalysis, Warning, Collection, Coin, Monitor, Sunny, Moon, SwitchButton, Picture, Box } from '@element-plus/icons-vue'
+import { ChatDotRound, DataAnalysis, Warning, Collection, Coin, Monitor, Sunny, Moon, SwitchButton, Picture, Box, Bell, Clock } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
+import { unreadCount } from '@/api/notification'
 
 const route = useRoute()
 const router = useRouter()
@@ -73,6 +85,18 @@ const auth = useAuthStore()
 const activeMenu = computed(() => route.path)
 const initial = computed(() => (auth.username || 'U').charAt(0).toUpperCase())
 const theme = ref(localStorage.getItem('bi_theme') || 'light')
+const unread = ref(0)
+
+async function refreshUnread() {
+  try {
+    unread.value = await unreadCount()
+  } catch (e) {
+    unread.value = 0
+  }
+}
+function goNotify() {
+  router.push('/notification')
+}
 
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
@@ -83,6 +107,10 @@ function doLogout() {
   auth.logout()
   router.push('/login')
 }
+
+onMounted(refreshUnread)
+// 路由切换（含从通知中心返回）时刷新未读角标
+watch(() => route.fullPath, refreshUnread)
 </script>
 
 <style scoped>

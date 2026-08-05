@@ -380,9 +380,9 @@ async function selectTable(physicalName, dbId) {
   previewData.value = []
   previewColumns.value = []
   try {
-    const cols = await getSandboxColumns(physicalName)
+    const cols = await getSandboxColumns(physicalName, dbId)
     columns.value = Array.isArray(cols) ? cols : []
-    const data = await getSandboxData(physicalName, 100)
+    const data = await getSandboxData(physicalName, 100, dbId)
     previewData.value = (data && data.data) || []
     previewColumns.value = (data && data.columns) || []
   } catch (e) {

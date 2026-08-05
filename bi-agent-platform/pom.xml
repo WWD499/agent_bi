@@ -13,7 +13,7 @@
 
     <groupId>com.bi</groupId>
     <artifactId>agent-bi-platform</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>agent-bi-platform</name>
     <description>AI 智能 BI 数据分析平台 · Agent 化重构（Spring Boot 3 + Java 21 + Spring AI）</description>
 

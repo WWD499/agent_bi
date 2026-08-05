@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支的重复推送取消旧运行，节省资源
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: 后端构建与测试（Spring Boot / Java 21）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bi-agent-platform
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: bi-agent-platform/pom.xml
+
+      - name: 版本号一致性校验（前后端必须对齐）
+        run: |
+          MVN_VER=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout | tr -d '[:space:]')
+          PKG_VER=$(grep -m1 '"version"' ../agent-ui/package.json | sed -E 's/.*"version"[ ]*:[ ]*"([^"]+)".*/\1/')
+          echo "backend=$MVN_VER  frontend=$PKG_VER"
+          if [ "$MVN_VER" != "$PKG_VER" ]; then
+            echo "::error::前后端版本号不一致（backend=$MVN_VER, frontend=$PKG_VER），请在 pom.xml 与 package.json 中保持一致"
+            exit 1
+          fi
+
+      - name: Build & Test（门禁：失败阻断合入）
+        run: mvn -B -ntp verify
+
+  frontend:
+    name: 前端构建（Vue 3 / Vite）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build（门禁：失败阻断合入）
+        run: npm run build

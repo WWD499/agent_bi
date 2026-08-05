@@ -80,7 +80,7 @@ public class BiDatasourceServiceImpl implements IBiDatasourceService {
              Connection conn = tmp.getConnection()) {
             return conn.isValid(3);
         } catch (SQLException e) {
-            log.warn("测试连接失败：{}", e.getMessage());
+            log.warn("测试连接失败", e);
             return false;
         }
     }

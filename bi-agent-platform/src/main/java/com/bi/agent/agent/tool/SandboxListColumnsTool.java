@@ -14,9 +14,11 @@ import java.util.List;
 public class SandboxListColumnsTool implements AgentTool {
 
     private final SandboxQueryService sandboxQueryService;
+    private final Long scopeDbId;
 
-    public SandboxListColumnsTool(SandboxQueryService sandboxQueryService) {
+    public SandboxListColumnsTool(SandboxQueryService sandboxQueryService, Long scopeDbId) {
         this.sandboxQueryService = sandboxQueryService;
+        this.scopeDbId = scopeDbId;
     }
 
     @Override
@@ -50,7 +52,7 @@ public class SandboxListColumnsTool implements AgentTool {
             return "缺少 tableName 参数";
         }
         try {
-            List<DbColumnVo> cols = sandboxQueryService.listSandboxColumns(tableName);
+            List<DbColumnVo> cols = sandboxQueryService.listSandboxColumns(scopeDbId, tableName);
             JSONArray arr = new JSONArray();
             for (DbColumnVo c : cols) {
                 JSONObject o = new JSONObject();

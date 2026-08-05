@@ -40,6 +40,7 @@ import com.bi.agent.bi.vo.DbTableVo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -78,6 +79,11 @@ public class BiAgentService {
 
     /** 数据沙箱特殊数据源标志：前端传 datasourceId=0 表示锁定沙箱（sandbox schema） */
     public static final Long SANDBOX_DS_ID = 0L;
+
+    /** 服务端「可信模式」开关：开启后客户端请求的 skipConfirm 才生效（写操作免确认直接执行）。
+     *  默认关闭——任何客户端都无法自行绕过写操作确认护栏（安全默认）。 */
+    @Value("${agent.sandbox.trusted-mode:false}")
+    private boolean trustedMode;
 
     private final LlmService llmService;
     private final AgentMemory memory;
@@ -137,6 +143,16 @@ public class BiAgentService {
         }
         AgentSession session = new AgentSession(sessionId, emitter);
         sessionRegistry.register(session);
+
+        // 写操作确认护栏：客户端请求的 skipConfirm 仅当服务端开启 agent.sandbox.trusted-mode
+        // 时才真正生效；否则任何客户端都无法自行绕过确认（安全默认）。
+        boolean effectiveSkipConfirm = skipConfirm && trustedMode;
+        if (skipConfirm && !trustedMode) {
+            log.warn("客户端请求 skipConfirm，但服务端 agent.sandbox.trusted-mode=false，已忽略；"
+                    + "写操作仍将要求用户确认（session={}）", sessionId);
+        } else if (skipConfirm) {
+            log.info("skipConfirm 已获服务端 trusted-mode 授权，写操作免确认执行（session={}）", sessionId);
+        }
         try {
             // 1. 组装对话历史（含记忆回填 + 本轮 user）
             List<Map<String, Object>> messages = new ArrayList<>();
@@ -147,7 +163,7 @@ public class BiAgentService {
             if (SANDBOX_DS_ID.equals(datasourceId) || datasourceId < 0) {
                 // 沙箱模式：用沙箱专属系统提示词（暴露 5 个沙箱只读工具，
                 // 避免模型调用未注册的 rag_search / analyze_alert 而报未知工具）
-                sysPrompt = buildSandboxSystemPrompt(sandboxDbId, allowWrite, skipConfirm);
+                sysPrompt = buildSandboxSystemPrompt(sandboxDbId, allowWrite, effectiveSkipConfirm);
             } else {
                 StringBuilder prefix = new StringBuilder();
                 prefix.append("【当前用户已在前端锁定数据源 ID=").append(datasourceId)
@@ -172,7 +188,7 @@ public class BiAgentService {
             // 2. 手写 ReAct 循环（含工具调用 + 推理轨迹），顺便收集 select_chart 图表
             List<Map<String, Object>> charts = new ArrayList<>();
             List<AgentTool> requestTools = buildTools(userId, datasourceId, sandboxDbId, query, allowWrite);
-            String finalAnswer = runReactLoop(messages, session, requestTools, charts, skipConfirm);
+            String finalAnswer = runReactLoop(messages, session, requestTools, charts, effectiveSkipConfirm);
             // 归一化为正常对话样式（去掉 ### 、** 等 Markdown 标记）
             finalAnswer = normalizeAnswer(finalAnswer);
 
@@ -223,7 +239,7 @@ public class BiAgentService {
             // 沙箱模式：注册沙箱专用工具集（名称与业务库一致，但指向 sandbox）
             // sandboxDbId 为 null 表示全部沙箱库；非 null 表示锁定到某一具体沙箱库的作用域
             t.add(new SandboxListTablesTool(sandboxQueryService, sandboxDbId));
-            t.add(new SandboxListColumnsTool(sandboxQueryService));
+            t.add(new SandboxListColumnsTool(sandboxQueryService, sandboxDbId));
             t.add(new SandboxNl2SqlTool(sandboxQueryService, sandboxDbId));
             t.add(new SandboxRunSqlTool(sandboxQueryService));
             t.add(new SandboxSelectChartTool(sandboxQueryService, chartSelector, userQuery));
@@ -596,12 +612,12 @@ public class BiAgentService {
      * 工具集合与确认行为受双开关控制（仅在沙箱模式有意义，业务库模式根本不注册写工具）：
      * - allowWrite=false → 仅注册 5 个只读工具，并在提示词中明确「只读模式、写工具禁用」；
      * - allowWrite=true  → 额外注册 5 个写工具；
-     *   - skipConfirm=false → 写工具执行前需用户在对话框确认；
-     *   - skipConfirm=true  → 写工具直接执行、不再弹确认框（提示词提醒模型谨慎）。
+     *   - effectiveSkipConfirm=false（默认，或客户端请求但未获服务端 trusted-mode 授权）→ 写工具执行前需用户在对话框确认；
+     *   - effectiveSkipConfirm=true（需服务端 agent.sandbox.trusted-mode=true 且客户端请求）→ 写工具直接执行、不再弹确认框（提示词提醒模型谨慎）。
      *
      * @param sandboxDbId 作用域沙箱库 id；为 null 表示全部沙箱库
      * @param allowWrite  是否允许写库（主开关）
-     * @param skipConfirm 是否跳过确认直接执行（子开关，仅当 allowWrite 为真时生效）
+     * @param skipConfirm 是否跳过确认直接执行（子开关；仅当服务端 agent.sandbox.trusted-mode=true 时才真正生效，否则写操作始终要求确认）
      */
     private String buildSandboxSystemPrompt(Long sandboxDbId, boolean allowWrite, boolean skipConfirm) {
         String scope = (sandboxDbId == null)

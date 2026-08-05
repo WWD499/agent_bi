@@ -66,7 +66,7 @@ public class SandboxAuditService {
                     failReason == null ? "" : failReason);
         } catch (Exception e) {
             // 审计失败绝不影响主流程
-            log.warn("沙箱审计写入失败：op={}, target={}, err={}", operation, target, e.getMessage());
+            log.warn("沙箱审计写入失败：op={}, target={}", operation, target, e);
         }
     }
 
@@ -94,7 +94,7 @@ public class SandboxAuditService {
                             + "to_char(create_time, 'YYYY-MM-DD HH24:MI:SS') AS create_time "
                             + "FROM bi_sandbox_audit ORDER BY id DESC LIMIT " + n);
         } catch (Exception e) {
-            log.warn("沙箱审计查询失败：{}", e.getMessage());
+            log.warn("沙箱审计查询失败", e);
             return java.util.Collections.emptyList();
         }
     }

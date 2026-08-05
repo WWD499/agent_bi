@@ -817,7 +817,9 @@ async function loadColumnOptions(tableName) {
   if (!datasourceId.value || !tableName) { columnOptions.value = []; return }
   loadingCols.value = true
   try {
-    columnOptions.value = await getSandboxColumns(tableName)
+    // 沙箱模式下传入库作用域（datasourceId 取负即 -库id），按库隔离解析，避免误命中其他库表
+    const dbId = datasourceId.value < 0 ? -datasourceId.value : null
+    columnOptions.value = await getSandboxColumns(tableName, dbId)
   } catch (e) {
     columnOptions.value = []
   } finally {

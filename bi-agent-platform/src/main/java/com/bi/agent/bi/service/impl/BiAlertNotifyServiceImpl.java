@@ -1,8 +1,11 @@
 package com.bi.agent.bi.service.impl;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.bi.agent.bi.domain.BiAlertRecord;
 import com.bi.agent.bi.domain.BiAlertRule;
+import com.bi.agent.bi.domain.BiNotify;
 import com.bi.agent.bi.service.IBiAlertNotifyService;
+import com.bi.agent.bi.service.IBiNotifyService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,9 +58,38 @@ public class BiAlertNotifyServiceImpl implements IBiAlertNotifyService {
     @Value("${bi.alert.mail.default-recipient:}")
     private String defaultRecipient;
 
+    /**
+     * 站内信服务：预警触发后写入用户通知表（bi_notify），替代原纯日志方案。
+     * required=false：即使未启用通知服务也不影响预警主流程。
+     */
+    @Autowired(required = false)
+    private IBiNotifyService biNotifyService;
+
+    /** 站内信默认接收人（预警由调度触发、无登录会话时回退），默认 admin（与本平台登录用户名一致） */
+    @Value("${bi.notify.default-user:admin}")
+    private String defaultNotifyUser;
+
     @Override
     public void notify(BiAlertRule rule, BiAlertRecord record) {
-        // 站内信：当前以结构化日志呈现（见下方 warn 日志），Phase 3 接前端通知总线后改为写入用户通知表
+        // 站内信：写入用户通知表（bi_notify），前端通知中心据此展示
+        if (biNotifyService != null) {
+            try {
+                BiNotify notify = new BiNotify();
+                notify.setUserId(resolveReceiver(rule));
+                notify.setRuleId(record.getRuleId());
+                notify.setRecordId(record.getId());
+                notify.setTitle("数据预警：" + (record.getRuleName() != null ? record.getRuleName() : "未知规则"));
+                notify.setContent(buildNotifyContent(rule, record));
+                notify.setLevel(record.getAlertLevel());
+                notify.setIsRead(0);
+                biNotifyService.add(notify);
+            } catch (Exception e) {
+                // 站内信失败不影响主流程；打印完整堆栈便于排查
+                log.error("写入站内信通知失败（已忽略）", e);
+            }
+        }
+
+        // 结构化日志保留（便于联调 / 监控采集 / 未接入前端前的兜底可见性）
         log.warn("[BI数据预警] 规则={} | 表={} | 级别={} | 消息={} | 实际值={} | 阈值={} {} | 处理人={}",
                 record.getRuleName(),
                 record.getTableName(),
@@ -76,6 +108,38 @@ public class BiAlertNotifyServiceImpl implements IBiAlertNotifyService {
             log.info("[BI数据预警-AI分析] 规则={} | 分析：{}",
                     record.getRuleName(), record.getAnalysisResult());
         }
+    }
+
+    /**
+     * 解析站内信接收人：
+     * 若在用户请求上下文（有登录会话）则取当前登录用户；否则回退到配置的默认用户（bi.notify.default-user）。
+     * 预警当前由调度触发、无会话，通常走默认用户；多用户场景可在此扩展为「规则 → 用户」映射。
+     */
+    private String resolveReceiver(BiAlertRule rule) {
+        try {
+            if (StpUtil.isLogin()) {
+                return String.valueOf(StpUtil.getLoginId());
+            }
+        } catch (Exception ignored) {
+            // 无会话（调度触发）时忽略，走默认用户
+        }
+        return defaultNotifyUser;
+    }
+
+    /**
+     * 组装站内信正文（保留换行，前端以 white-space: pre-wrap 渲染）。
+     */
+    private String buildNotifyContent(BiAlertRule rule, BiAlertRecord record) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("监控表：").append(record.getTableName()).append("\n");
+        sb.append("触发消息：").append(record.getAlertMessage()).append("\n");
+        sb.append("实际值：").append(record.getActualValue() == null ? "-" : record.getActualValue())
+                .append("，阈值：").append(record.getThresholdValue() == null ? "-" : record.getThresholdValue())
+                .append(" ").append(record.getComparisonOperator()).append("\n");
+        if (StringUtils.isNotBlank(record.getAnalysisResult())) {
+            sb.append("AI 分析：").append(record.getAnalysisResult());
+        }
+        return sb.toString();
     }
 
     /**

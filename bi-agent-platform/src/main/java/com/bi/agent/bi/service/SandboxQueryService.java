@@ -141,11 +141,30 @@ public class SandboxQueryService {
      * @param tblName 表名提示（短名 / 显示名 / 物理名）
      */
     public List<DbColumnVo> listSandboxColumns(String tblName) {
+        return listSandboxColumns(null, tblName);
+    }
+
+    /**
+     * 列出沙箱某表的字段结构（按作用域库 dbId 隔离解析）。
+     *
+     * <p>与 {@link #listSandboxColumns(String)} 的区别在于：本方法把 dbId 透传给
+     * {@link #resolvePhysicalName(Long, String, String)}，使其仅在指定沙箱库内解析表名，
+     * 从架构上杜绝「默认库脏表」串扰「销售库」列解析（此前导致销售表显示医疗字段的根因）。
+     * dbId 为 null 时回落到全局解析（向后兼容「全部沙箱库」模式）。
+     *
+     * @param dbId  作用域沙箱库 id；为 null 表示全部沙箱库
+     * @param tblName 表名提示（短名 / 显示名 / 物理名）
+     */
+    public List<DbColumnVo> listSandboxColumns(Long dbId, String tblName) {
         if (tblName == null || tblName.trim().isEmpty()) {
             return Collections.emptyList();
         }
-        // 短名/显示名 → 物理名（兼容历史拼接名）；解析不到则原样尝试（新表短名即物理名）
-        String physicalName = resolvePhysicalName(null, tblName.trim(), null);
+        // 短名/显示名/物理名 → 物理名（兼容历史拼接名）。tblName 优先按「物理名精确匹配」解析（step2），
+        // 避免把物理名当短名传入时漏掉物理精确匹配、反而被模糊匹配误导向 __ 等脏表。
+        // 给定 dbId 时仅在指定库内解析，绝不命中其他库的表（含脏表）。
+        // （此前 bug：传入 sales_dm__demo_monthly_revenue 作为短名，step2 被跳过，step3.3 因
+        //  "sales_dm__demo_monthly_revenue".contains("__") 命中脏表 __，导致返回医疗字段。）
+        String physicalName = resolvePhysicalName(dbId, null, tblName.trim());
         if (physicalName == null) {
             physicalName = tblName.trim();
         }
@@ -192,7 +211,7 @@ public class SandboxQueryService {
                 }
             }
         } catch (Exception e) {
-            log.debug("回填沙箱列标签失败（不影响物理列查询）：{}", e.getMessage());
+            log.warn("回填沙箱列标签失败（不影响物理列查询）", e);
         }
         return cols;
     }
@@ -271,7 +290,7 @@ public class SandboxQueryService {
             // 用短名（tableName）：物理表名 == 短名，模型写 SQL 一律 sandbox."短名"
             String tbl = t.getTableName();
             schemaText.append("## 表名：").append(SANDBOX_SCHEMA).append(".\"").append(tbl).append("\"\n字段：\n");
-            for (DbColumnVo c : listSandboxColumns(tbl)) {
+            for (DbColumnVo c : listSandboxColumns(dbId, tbl)) {
                 schemaText.append("  - ").append(c.getColumnName());
                 if (c.getLabel() != null) {
                     schemaText.append(" (").append(c.getLabel()).append(')');
@@ -406,6 +425,9 @@ public class SandboxQueryService {
             // 1. 解析作用域库
             BiSandboxDb db = resolveScopeDb(scopeDbId);
             String shortName = sanitizeIdentifierLocal(targetTableName);
+            if (!isValidShortName(shortName)) {
+                throw new BizException("无法生成合法英文表名「" + shortName + "」，请使用英文/数字/下划线命名（如 sales_2024）");
+            }
             // 物理名 == 短名，全沙箱短名全局唯一：任一库已存在同名表则拒绝
             if (sandboxMapper.countByTableName(shortName) > 0) {
                 throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请换名或先删除");
@@ -421,8 +443,8 @@ public class SandboxQueryService {
             jdbcTemplate.execute(ddl);
             log.info("沙箱落表完成：{}（库 {}）", physicalName, db.getName());
 
-            // 3. 读取新表结构 + 行数，登记元数据
-            List<DbColumnVo> cols = listSandboxColumns(physicalName);
+            // 3. 读取新表结构 + 行数，登记元数据（限定当前落表库，避免误解析到其它库）
+            List<DbColumnVo> cols = listSandboxColumns(db.getId(), physicalName);
             Integer rowCount = jdbcTemplate.queryForObject(
                     "SELECT COUNT(*) FROM " + SANDBOX_SCHEMA + ".\"" + physicalName + "\"", Integer.class);
             JSONArray colsJson = new JSONArray();
@@ -455,7 +477,8 @@ public class SandboxQueryService {
         } catch (Exception e) {
             auditService.logFailure(SandboxAuditService.OP_MATERIALIZE,
                     targetTableName == null ? "" : targetTableName, operator, e.getMessage());
-            throw new BizException("落表失败：" + e.getMessage());
+            log.error("落表失败", e);
+            throw new BizException("落表失败：" + e.getMessage(), e);
         }
     }
 
@@ -478,6 +501,9 @@ public class SandboxQueryService {
             }
             BiSandboxDb db = resolveScopeDb(scopeDbId);
             String shortName = sanitizeIdentifierLocal(tableName);
+            if (!isValidShortName(shortName)) {
+                throw new BizException("无法生成合法英文表名「" + shortName + "」，请使用英文/数字/下划线命名（如 sales_2024）");
+            }
             // 物理名 == 短名，全沙箱短名全局唯一：任一库已存在同名表则拒绝
             if (sandboxMapper.countByTableName(shortName) > 0) {
                 throw new BizException("沙箱已存在表 " + shortName + "（表名全沙箱唯一），请换名或先删除");
@@ -541,7 +567,8 @@ public class SandboxQueryService {
         } catch (Exception e) {
             auditService.logFailure(SandboxAuditService.OP_CREATE_TABLE,
                     tableName == null ? "" : tableName, operator, e.getMessage());
-            throw new BizException("建表失败：" + e.getMessage());
+            log.error("建表失败", e);
+            throw new BizException("建表失败：" + e.getMessage(), e);
         }
     }
 
@@ -578,7 +605,8 @@ public class SandboxQueryService {
         } catch (Exception e) {
             auditService.logFailure(SandboxAuditService.OP_DROP_TABLE,
                     target == null ? (physicalName == null ? "" : physicalName) : target, operator, e.getMessage());
-            throw new BizException("删表失败：" + e.getMessage());
+            log.error("删表失败", e);
+            throw new BizException("删表失败：" + e.getMessage(), e);
         }
     }
 
@@ -599,43 +627,58 @@ public class SandboxQueryService {
                 return rec.getPhysicalName();
             }
         }
-        // 2. 按 physicalName 精确匹配
+        // 2. 按 physicalName 精确匹配（给定 dbId 时仅在该库内生效，杜绝跨库命中）
         if (physicalName != null && !physicalName.isBlank()) {
             String p = physicalName.trim();
             if (IDENT_PATTERN.matcher(p).matches()) {
                 BiSandboxTable rec = sandboxMapper.selectByPhysicalName(p);
-                if (rec != null) {
+                if (rec != null && (dbId == null || dbId.equals(rec.getDbId()))) {
                     return rec.getPhysicalName();
                 }
             }
         }
-        // 3. 兜底：按 tableName 短名或 displayName 在全库匹配
+        // 3. 兜底：按 tableName 短名或 displayName 匹配。dbId 非空时仅在指定库内匹配，
+        //    从架构上杜绝「默认库脏表」串扰「销售库」的列解析（P3 根因修复）。
         String nameHint = (tableName != null && !tableName.isBlank()) ? tableName.trim()
                 : (physicalName != null && !physicalName.isBlank()) ? physicalName.trim() : null;
         if (nameHint == null) {
             return null;
         }
         String lowerHint = nameHint.toLowerCase();
-        // 3.1 短名精确匹配（取最近创建的一张，防止跨库同名歧义）
-        for (BiSandboxTable rec : sandboxMapper.selectAll()) {
+        // dbId 非空 → 仅取该库候选集；为空 → 全库（向后兼容「全部沙箱库」模式）
+        List<BiSandboxTable> candidates = (dbId != null)
+                ? sandboxMapper.selectByDbId(dbId)
+                : sandboxMapper.selectAll();
+        // 3.1 短名精确匹配（指定库内，杜绝跨库同名歧义）
+        for (BiSandboxTable rec : candidates) {
             if (nameHint.equalsIgnoreCase(rec.getTableName())) {
                 return rec.getPhysicalName();
             }
         }
-        // 3.2 displayName 精确匹配
+        // 3.2 displayName 精确匹配（指定库内）
         BiSandboxTable byDisplay = sandboxMapper.selectByDisplayName(nameHint);
-        if (byDisplay != null) {
+        if (byDisplay != null && (dbId == null || dbId.equals(byDisplay.getDbId()))) {
             return byDisplay.getPhysicalName();
         }
-        // 3.3 物理名包含匹配（对用户口语化简称做尽力兜底，如把 products 误写成 product 也能命中）
-        for (BiSandboxTable rec : sandboxMapper.selectAll()) {
-            String phy = rec.getPhysicalName();
-            if (phy != null && phy.toLowerCase().contains(lowerHint)) {
-                return phy;
-            }
-            String shortName = rec.getTableName();
-            if (shortName != null && lowerHint.contains(shortName.toLowerCase())) {
-                return rec.getPhysicalName();
+        // 3.3 模糊兜底（仅在提示长度足够、且候选名本身合法时）：兼容口语化简称（如 product→products）。
+        // 关键防御：跳过 __ 等退化名，避免 sales_dm__* 这种含 "__" 的合法物理名被 __ 脏表「包含命中」。
+        // 候选集已按 dbId 过滤，天然排除其他库的脏表。
+        if (lowerHint.length() >= 3) {
+            for (BiSandboxTable rec : candidates) {
+                String phy = rec.getPhysicalName();
+                String shortName = rec.getTableName();
+                if (isDegenerateName(phy) || isDegenerateName(shortName)) {
+                    continue;
+                }
+                if (phy != null && phy.toLowerCase().contains(lowerHint)) {
+                    return phy;
+                }
+                // 防御：跳过单字符/退化的短名，防止 sales_dm__demo_product 被短名 "c" 这种单字符
+                // 子串误命中（"c" 在 product/demo 等词里必然出现）。
+                if (shortName != null && isValidShortName(shortName)
+                        && lowerHint.contains(shortName.toLowerCase())) {
+                    return rec.getPhysicalName();
+                }
             }
         }
         return null;
@@ -657,7 +700,7 @@ public class SandboxQueryService {
         if (!all.isEmpty()) {
             return all.get(0);
         }
-        throw new BizException("沙箱尚未初始化（缺少默认库），请先执行 sandbox_init.sql");
+        throw new BizException("沙箱尚未初始化（缺少默认库），请重启应用以自动初始化沙箱元数据");
     }
 
     /** 把任意源标识符规范化为合法沙箱标识符（与 SandboxImportService 同规则） */
@@ -684,6 +727,20 @@ public class SandboxQueryService {
         }
         // 与库内已存在短名冲突防御：交由调用方 countByDbAndTable 检查
         return r;
+    }
+
+    /** 表短名是否合法：去掉下划线后须仍含 >=2 个字母/数字，排除 __ / _a / 单字符 等退化名 */
+    private static boolean isValidShortName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        String core = name.replace("_", "");
+        return core.length() >= 2;
+    }
+
+    /** 名称是否退化（空 / 全下划线 / 仅空白）；退化名不参与模糊匹配，避免 __ 误命中 sales_dm__* 等合法表 */
+    private static boolean isDegenerateName(String s) {
+        return s == null || s.isBlank() || s.replace("_", "").trim().isEmpty();
     }
 
     /**

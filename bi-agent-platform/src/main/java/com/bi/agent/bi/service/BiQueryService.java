@@ -107,7 +107,7 @@ public class BiQueryService {
             }
         } catch (Exception e) {
             // 探查异常：降级走原无探查逻辑，绝不阻断主流程
-            log.warn("数据探查异常，降级走原无探查逻辑：{}", e.getMessage());
+            log.warn("数据探查异常，降级走原无探查逻辑", e);
         }
         // 候选表非空但探查结果为空 -> 判定为降级跳过（仍走原静态模板软提示）
         probeSkipped = !candidateTables.isEmpty() && (dataProfiles == null || dataProfiles.isEmpty());
