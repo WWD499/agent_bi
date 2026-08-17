@@ -162,25 +162,17 @@ GROUP BY EXTRACT(YEAR FROM f.order_date), EXTRACT(MONTH FROM f.order_date), f.re
 -- 5. 沙箱元数据兜底回填（仅修正历史遗留的空值，非破坏性）
 --    现状：新表物理名 == 短名；对 physical_name / display_name / db_id 为空的历史行补默认值。
 --    已有填写值的行不会被覆盖；全新库无行时为 no-op。
+--    注意：原实现为 DO $$ ... $$ 匿名过程块，但 Spring sql.init 默认以 ';' 分隔语句，
+--          会误把块内的分号当成分隔符导致解析失败；改为等价的三条普通 UPDATE（无 $$、无内部分号）。
 -- ---------------------------------------------------------------------------
-DO $$
-DECLARE
-    def_db_id BIGINT;
-BEGIN
-    SELECT id INTO def_db_id FROM bi_sandbox_db WHERE db_key = 'default';
-    IF def_db_id IS NULL THEN
-        def_db_id := 1;
-    END IF;
+UPDATE bi_sandbox_table
+    SET physical_name = table_name
+    WHERE physical_name IS NULL OR physical_name = '';
 
-    UPDATE bi_sandbox_table
-        SET physical_name = table_name
-        WHERE physical_name IS NULL OR physical_name = '';
+UPDATE bi_sandbox_table
+    SET display_name = table_name
+    WHERE display_name IS NULL OR display_name = '';
 
-    UPDATE bi_sandbox_table
-        SET display_name = table_name
-        WHERE display_name IS NULL OR display_name = '';
-
-    UPDATE bi_sandbox_table
-        SET db_id = def_db_id
-        WHERE db_id IS NULL;
-END $$;
+UPDATE bi_sandbox_table
+    SET db_id = COALESCE((SELECT id FROM bi_sandbox_db WHERE db_key = 'default'), 1)
+    WHERE db_id IS NULL;
